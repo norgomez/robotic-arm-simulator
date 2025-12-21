@@ -1,36 +1,25 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Web-Based Robotic Arm Simulator
 
-## Getting Started
+A 3-DOF robotic arm simulation built with **Next.js**, **Three.js (R3F)**, and **TypeScript**. This project demonstrates core Mechatronics concepts including Inverse Kinematics, Finite State Machine (FSM) automation, and real-time telemetry visualization.
 
-First, run the development server:
+## Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+* **Inverse Kinematics (IK):** Geometric solution for 3-DOF arm positioning.
+* **Trajectory Planning:** Linear interpolation (Lerp) for smooth joint motion and physics-based movement.
+* **Autonomous Pick & Place:** A Finite State Machine (FSM) that autonomously plans paths to pick up objects and place them in a drop zone.
+* **Telemetry Dashboard:** Real-time visualization of joint velocity and simulated motor torque/load using Recharts.
+* **Interactive Controls:** Switch between Manual Joint Control, IK Mouse Control, and Full Autonomy.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Tech Stack
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+* **Framework:** Next.js 14 / React
+* **3D Engine:** React Three Fiber (Three.js)
+* **Styling:** Tailwind CSS
+* **Data Viz:** Recharts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## How to Run
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1.  Clone the repo: `git clone https://github.com/YOUR_USERNAME/robotic-arm-simulator.git`
+2.  Install dependencies: `npm install`
+3.  Run the development server: `npm run dev`
+4.  Open [http://localhost:3000](http://localhost:3000)
