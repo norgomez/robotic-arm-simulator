@@ -21,16 +21,18 @@ const INITIAL_BLOCKS: BlockType[] = [
 // --- MATH HELPER ---
 const lerp = (start: number, end: number, speed: number) => start + (end - start) * speed;
 
-// --- 1. The Interactive Block Component ---
+// --- 1. The Interactive Block Component (FIXED) ---
 function Block({ data, attachedId, targetPosition, resetKey, onPosUpdate }: any) {
     const meshRef = useRef<THREE.Mesh>(null);
-    // Physics state
-    const position = useRef(new THREE.Vector3(...data.initialPos));
+
+    // FIX 1: Pass coordinates individually instead of spreading (...data.initialPos)
+    const position = useRef(new THREE.Vector3(data.initialPos[0], data.initialPos[1], data.initialPos[2]));
     const velocityY = useRef(0);
 
-    // Reset logic: When resetKey changes, snap back to start
+    // Reset logic
     useEffect(() => {
-        position.current.set(...data.initialPos);
+        // FIX 2: Pass coordinates individually here too
+        position.current.set(data.initialPos[0], data.initialPos[1], data.initialPos[2]);
         velocityY.current = 0;
     }, [resetKey, data.initialPos]);
 
@@ -57,7 +59,6 @@ function Block({ data, attachedId, targetPosition, resetKey, onPosUpdate }: any)
         }
 
         meshRef.current.position.copy(position.current);
-        // Report position back to parent for proximity checks
         if (onPosUpdate) onPosUpdate(data.id, position.current);
     });
 
@@ -129,7 +130,7 @@ function RobotController() {
     const [attachedBlockId, setAttachedBlockId] = useState<number | null>(null);
     const [mode, setMode] = useState<'MANUAL' | 'AUTO_PICK' | 'REPLAY'>('MANUAL');
     const [autoPhase, setAutoPhase] = useState('IDLE');
-    const [resetKey, setResetKey] = useState(0); // Used to force reset blocks
+    const [resetKey, setResetKey] = useState(0);
 
     // DATA
     const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
@@ -137,10 +138,10 @@ function RobotController() {
     const [telemetryData, setTelemetryData] = useState<any[]>([]);
 
     // REFS
-    const blockPositions = useRef(new Map<number, THREE.Vector3>()); // Map to store all block positions
+    const blockPositions = useRef(new Map<number, THREE.Vector3>());
     const prevAngles = useRef({ base: 0, shoulder: 0, elbow: 0 });
     const frameCount = useRef(0);
-    const targetBlockIdForAuto = useRef(1); // Auto mode targets Block 1 by default
+    const targetBlockIdForAuto = useRef(1);
 
     useFrame((state, delta) => {
         // 1. Interpolation
@@ -164,14 +165,13 @@ function RobotController() {
         }
         prevAngles.current = newAngles;
 
-        // 3. AUTO PICK LOGIC (Targets the block in targetBlockIdForAuto)
+        // 3. AUTO PICK LOGIC
         if (mode === 'AUTO_PICK') {
             const speed = 6 * delta;
             let targetDest = new THREE.Vector3();
             let nextPhase = autoPhase;
             const threshold = 0.1;
 
-            // Get position of the specific target block
             const targetBlockPos = blockPositions.current.get(targetBlockIdForAuto.current) || new THREE.Vector3(4, 0.5, 4);
 
             switch (autoPhase) {
@@ -183,7 +183,6 @@ function RobotController() {
                 case 'DESCEND':
                     targetDest.set(targetBlockPos.x, targetBlockPos.y, targetBlockPos.z);
                     if (ikTarget.distanceTo(targetDest) < threshold) {
-                        // Force grab specific block
                         setIsGripping(true);
                         setAttachedBlockId(targetBlockIdForAuto.current);
                         nextPhase = 'LIFT';
@@ -194,7 +193,7 @@ function RobotController() {
                     if (ikTarget.distanceTo(targetDest) < threshold) nextPhase = 'MOVE_TO_ZONE';
                     break;
                 case 'MOVE_TO_ZONE':
-                    targetDest.set(-4, 3, 2); // Go to Zone A
+                    targetDest.set(-4, 3, 2);
                     if (ikTarget.distanceTo(targetDest) < threshold) nextPhase = 'LOWER_TO_DROP';
                     break;
                 case 'LOWER_TO_DROP':
@@ -222,7 +221,7 @@ function RobotController() {
 
             if (ikTarget.distanceTo(targetPoint.pos) < 0.1) {
                 if (targetPoint.grip !== isGripping) {
-                    if (targetPoint.grip) tryGrabClosest(); // Try to grab whatever is close
+                    if (targetPoint.grip) tryGrabClosest();
                     else { setIsGripping(false); setAttachedBlockId(null); }
                 }
                 setReplayIndex((replayIndex + 1) % waypoints.length);
@@ -241,13 +240,11 @@ function RobotController() {
         if (solution) desiredAngles.current = solution;
     };
 
-    // --- LOGIC: GRAB CLOSEST ---
     const tryGrabClosest = () => {
         setIsGripping(true);
         let closestId = null;
         let minDst = 1.5;
 
-        // Find closest block
         blockPositions.current.forEach((pos, id) => {
             const dist = ikTarget.distanceTo(pos);
             if (dist < minDst) {
@@ -267,15 +264,14 @@ function RobotController() {
         }
     };
 
-    // --- ACTIONS ---
     const handleReset = () => {
         setMode('MANUAL');
         setAutoPhase('IDLE');
         setIsGripping(false);
         setAttachedBlockId(null);
         setIkTarget(new THREE.Vector3(2, 2, 2));
-        setWaypoints([]); // Optional: Keep waypoints or clear? Clearing is safer for "Reset".
-        setResetKey(prev => prev + 1); // Triggers block respawn
+        setWaypoints([]);
+        setResetKey(prev => prev + 1);
     };
 
     const recordWaypoint = () => {
@@ -287,7 +283,6 @@ function RobotController() {
         else if (waypoints.length > 0) { setMode('REPLAY'); setReplayIndex(0); }
     };
 
-    // Distance for UI (To closest block)
     const getMinDist = () => {
         let min = 99;
         blockPositions.current.forEach((pos) => {
@@ -302,7 +297,6 @@ function RobotController() {
         <>
             <RobotArm jointAngles={smoothAngles} isGripping={isGripping} />
 
-            {/* Render All Blocks */}
             {INITIAL_BLOCKS.map(block => (
                 <Block
                     key={block.id}
@@ -395,7 +389,6 @@ function RobotController() {
                             </button>
                         </div>
 
-                        {/* --- NEW RESET BUTTON --- */}
                         <button onClick={handleReset} className="w-full max-w-xs py-1 text-[9px] font-bold font-mono text-red-500 bg-red-950/30 border border-red-900/50 hover:bg-red-900/50 rounded transition-all">
                             ⚠ RESET SYSTEM
                         </button>
