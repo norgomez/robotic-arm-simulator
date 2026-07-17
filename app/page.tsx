@@ -8,6 +8,10 @@ import { Block } from '@/components/scene/Block';
 import { DropZones } from '@/components/scene/DropZones';
 import { WaypointVisualizer } from '@/components/scene/WaypointVisualizer';
 import { TargetControl } from '@/components/scene/TargetControl';
+import { TargetMarker } from '@/components/scene/TargetMarker';
+import { WorkspaceEnvelope } from '@/components/scene/WorkspaceEnvelope';
+import { ClickToMove } from '@/components/scene/ClickToMove';
+import { KeyboardControls } from '@/components/scene/KeyboardControls';
 import { Hud } from '@/components/hud/Hud';
 import { BLOCKS } from '@/store/robotStore';
 
@@ -27,7 +31,11 @@ export default function RobotPage() {
                 ))}
                 <DropZones />
                 <WaypointVisualizer />
+                <WorkspaceEnvelope />
+                <TargetMarker />
                 <TargetControl />
+                <ClickToMove />
+                <KeyboardControls />
 
                 <OrbitControls makeDefault />
             </Canvas>

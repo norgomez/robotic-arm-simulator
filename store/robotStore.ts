@@ -1,10 +1,12 @@
 import { create } from 'zustand';
 import * as THREE from 'three';
-import { solveIK } from '@/utils/kinematics';
+import { solveIK, solveFK, L1, MAX_REACH, MIN_REACH } from '@/utils/kinematics';
 
 // ---------- Types ----------
 export type JointAngles = { base: number; shoulder: number; elbow: number };
 export type Mode = 'MANUAL' | 'AUTO_PICK' | 'REPLAY';
+/** How the user commands the arm in MANUAL mode: IK target vs direct joints. */
+export type ControlMode = 'IK' | 'FK';
 export type AutoPhase =
     | 'IDLE'
     | 'APPROACH'
@@ -18,8 +20,10 @@ export type TelemetryPoint = { time: number; velocity: number; torque: number };
 export type BlockConfig = { id: number; initialPos: [number, number, number]; color: string };
 
 // ---------- Scene / simulation config ----------
+// NOTE: spawn positions must be reachable — inside MAX_REACH of the shoulder
+// pivot (0, L1, 0) including the FSM's approach point 2 units above the block.
 export const BLOCKS: BlockConfig[] = [
-    { id: 1, initialPos: [4, 0.5, 4], color: '#3b82f6' }, // Blue
+    { id: 1, initialPos: [3.5, 0.5, 3.5], color: '#3b82f6' }, // Blue
     { id: 2, initialPos: [4, 0.5, -2], color: '#ef4444' }, // Red
 ];
 
@@ -29,6 +33,8 @@ export const GRAB_RANGE = 1.5;
 export const CARRY_OFFSET_Y = -0.75;
 
 const HOME_TARGET = new THREE.Vector3(2, 2, 2);
+const SHOULDER_PIVOT = new THREE.Vector3(0, L1, 0);
+const REACH_MAX = MAX_REACH - 0.05; // margin keeps solveIK comfortably solvable
 const JOINT_LERP = 0.1; // per-frame interpolation factor toward the IK solution
 const AUTO_SPEED = 6; // units/sec in AUTO_PICK
 const REPLAY_SPEED = 4; // units/sec in REPLAY
@@ -37,6 +43,33 @@ const HUD_SAMPLE_EVERY_N_FRAMES = 5; // ~12Hz at 60fps: telemetry + HUD readout 
 const TELEMETRY_WINDOW = 40;
 
 const lerp = (start: number, end: number, t: number) => start + (end - start) * t;
+
+/**
+ * Clamp a requested target into the reachable workspace (mutates `p`).
+ * Returns true if the point had to be moved: above the floor, inside the
+ * outer reach sphere, and outside the inner singularity dead zone.
+ */
+const clampTargetInPlace = (p: THREE.Vector3): boolean => {
+    let clamped = false;
+    if (p.y < 0) {
+        p.y = 0;
+        clamped = true;
+    }
+    const offset = p.clone().sub(SHOULDER_PIVOT);
+    const dist = offset.length();
+    if (dist < 1e-6) offset.set(0, 1, 0);
+    else offset.normalize();
+
+    if (dist > REACH_MAX) {
+        p.copy(SHOULDER_PIVOT).addScaledVector(offset, REACH_MAX);
+        if (p.y < 0) p.y = 0; // floor wins over the sphere surface
+        clamped = true;
+    } else if (dist < MIN_REACH) {
+        p.copy(SHOULDER_PIVOT).addScaledVector(offset, MIN_REACH);
+        clamped = true;
+    }
+    return clamped;
+};
 
 /**
  * Mutable per-frame simulation data. These objects are mutated in place inside
@@ -62,6 +95,11 @@ interface SimData {
 interface RobotStore {
     // --- Reactive state: subscribe with narrow selectors ---
     mode: Mode;
+    controlMode: ControlMode;
+    /** True while the requested IK target is being clamped to the workspace edge. */
+    targetClamped: boolean;
+    /** Joint angles commanded by the FK sliders (radians). */
+    fkAngles: JointAngles;
     autoPhase: AutoPhase;
     isGripping: boolean;
     attachedBlockId: number | null;
@@ -79,8 +117,12 @@ interface RobotStore {
     sim: SimData;
 
     // --- Actions ---
-    /** Set the IK target and solve for joint angles (no-op on angles if unreachable). */
+    /** Set the IK target (clamped into the workspace) and solve for joint angles. */
     moveTarget: (pos: THREE.Vector3) => void;
+    /** Switch between IK-target and direct-joint (FK) control in MANUAL mode. */
+    setControlMode: (m: ControlMode) => void;
+    /** FK mode: command one joint directly; the target follows via forward kinematics. */
+    setJointAngle: (joint: keyof JointAngles, radians: number) => void;
     tryGrabClosest: () => void;
     toggleGripper: () => void;
     startAutoPick: () => void;
@@ -102,6 +144,9 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
 
     return {
         mode: 'MANUAL',
+        controlMode: 'IK',
+        targetClamped: false,
+        fkAngles: { base: 0, shoulder: 0, elbow: 0 },
         autoPhase: 'IDLE',
         isGripping: false,
         attachedBlockId: null,
@@ -125,13 +170,40 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
 
         moveTarget: (pos) => {
             const { sim } = get();
+            // Copy first, then clamp — never mutate the caller's vector (it may
+            // be the TransformControls gizmo's live position mid-drag).
             sim.ikTarget.copy(pos);
-            const solution = solveIK(pos.x, pos.y, pos.z);
+            const clamped = clampTargetInPlace(sim.ikTarget);
+            if (clamped !== get().targetClamped) set({ targetClamped: clamped });
+            const solution = solveIK(sim.ikTarget.x, sim.ikTarget.y, sim.ikTarget.z);
             if (solution) {
                 sim.desiredAngles.base = solution.base;
                 sim.desiredAngles.shoulder = solution.shoulder;
                 sim.desiredAngles.elbow = solution.elbow;
             }
+        },
+
+        setControlMode: (m) => {
+            const { sim } = get();
+            if (m === 'FK') {
+                // Seed the sliders from the current commanded pose, and sync the
+                // target to it so grabbing/proximity/waypoints keep working.
+                const d = { ...sim.desiredAngles };
+                const fk = solveFK(d.base, d.shoulder, d.elbow);
+                sim.ikTarget.set(fk.x, fk.y, fk.z);
+                set({ controlMode: 'FK', fkAngles: d, targetClamped: false });
+            } else {
+                set({ controlMode: 'IK' });
+            }
+        },
+
+        setJointAngle: (joint, radians) => {
+            const { sim } = get();
+            sim.desiredAngles[joint] = radians;
+            const d = sim.desiredAngles;
+            const fk = solveFK(d.base, d.shoulder, d.elbow);
+            sim.ikTarget.set(fk.x, fk.y, fk.z);
+            set((s) => ({ fkAngles: { ...s.fkAngles, [joint]: radians } }));
         },
 
         tryGrabClosest: () => {
@@ -159,7 +231,8 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
 
         startAutoPick: () => {
             if (get().mode !== 'MANUAL') return;
-            set({ mode: 'AUTO_PICK', autoPhase: 'IDLE' });
+            // Autonomous modes drive the IK target, so leave FK control
+            set({ mode: 'AUTO_PICK', autoPhase: 'IDLE', controlMode: 'IK' });
         },
 
         recordWaypoint: () => {
@@ -172,7 +245,7 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         toggleReplay: () => {
             const s = get();
             if (s.mode === 'REPLAY') set({ mode: 'MANUAL' });
-            else if (s.waypoints.length > 0) set({ mode: 'REPLAY', replayIndex: 0 });
+            else if (s.waypoints.length > 0) set({ mode: 'REPLAY', replayIndex: 0, controlMode: 'IK' });
         },
 
         reset: () => {
@@ -180,6 +253,9 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             sim.ikTarget.copy(HOME_TARGET);
             set((s) => ({
                 mode: 'MANUAL',
+                controlMode: 'IK',
+                targetClamped: false,
+                fkAngles: { base: 0, shoulder: 0, elbow: 0 },
                 autoPhase: 'IDLE',
                 isGripping: false,
                 attachedBlockId: null,
@@ -240,40 +316,48 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 const dest = new THREE.Vector3();
                 let nextPhase: AutoPhase = autoPhase;
                 const blockPos =
-                    sim.blockPositions.get(sim.autoTargetBlockId) ?? new THREE.Vector3(4, 0.5, 4);
+                    sim.blockPositions.get(sim.autoTargetBlockId) ?? new THREE.Vector3(3.5, 0.5, 3.5);
+
+                // Clamp destinations into the workspace so arrival checks can
+                // always succeed — an unreachable waypoint (e.g. a block dropped
+                // near the boundary) would otherwise stall the FSM forever.
+                const setDest = (x: number, y: number, z: number) => {
+                    dest.set(x, y, z);
+                    clampTargetInPlace(dest);
+                };
 
                 switch (autoPhase) {
                     case 'IDLE':
                         nextPhase = 'APPROACH';
                         break;
                     case 'APPROACH':
-                        dest.set(blockPos.x, blockPos.y + 2, blockPos.z);
+                        setDest(blockPos.x, blockPos.y + 2, blockPos.z);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'DESCEND';
                         break;
                     case 'DESCEND':
-                        dest.set(blockPos.x, blockPos.y, blockPos.z);
+                        setDest(blockPos.x, blockPos.y, blockPos.z);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) {
                             set({ isGripping: true, attachedBlockId: sim.autoTargetBlockId });
                             nextPhase = 'LIFT';
                         }
                         break;
                     case 'LIFT':
-                        dest.set(blockPos.x, 3, blockPos.z);
+                        setDest(blockPos.x, 3, blockPos.z);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'MOVE_TO_ZONE';
                         break;
                     case 'MOVE_TO_ZONE':
-                        dest.set(-4, 3, 2); // above Zone A
+                        setDest(-4, 3, 2); // above Zone A
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'LOWER_TO_DROP';
                         break;
                     case 'LOWER_TO_DROP':
-                        dest.set(-4, 0.8, 2);
+                        setDest(-4, 0.8, 2);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) {
                             set({ isGripping: false, attachedBlockId: null });
                             nextPhase = 'RETRACT';
                         }
                         break;
                     case 'RETRACT':
-                        dest.set(0, 3, 0);
+                        setDest(0, 3, 0);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) {
                             set({ mode: 'MANUAL', autoPhase: 'IDLE' });
                         }

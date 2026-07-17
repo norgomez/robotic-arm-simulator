@@ -53,24 +53,42 @@ components/
   scene/          Everything rendered inside the Canvas:
     SimulationLoop.tsx     null component; calls store.tick(delta) via useFrame
     Block.tsx              physics-lite cube (gravity/floor); follows gripper
-                           when attached; reports live position to the store
+                           when attached; reports live position to the store;
+                           click sends the arm hovering above it
     DropZones.tsx          static Zone A / Zone B ring markers
     WaypointVisualizer.tsx dashed path + numbered spheres for waypoints
-    TargetControl.tsx      TransformControls gizmo (MANUAL mode only); remounts
-                           on mode change/reset to pick up the target position
+    TargetControl.tsx      TransformControls gizmo (MANUAL + IK control only).
+                           Bidirectional sync: drags feed moveTarget(); when not
+                           dragging, a useFrame copies sim.ikTarget onto the
+                           gizmo so click/keyboard/reset moves reposition it
+    TargetMarker.tsx       always-visible glowing sphere at the IK target;
+                           amber while the target is clamped to the boundary
+    WorkspaceEnvelope.tsx  translucent reach dome + floor boundary ring
+    ClickToMove.tsx        invisible ground plane; click → move target there
+    KeyboardControls.tsx   WASD/QE target nudge (camera-relative), G grip,
+                           R record, Space replay
   hud/            The 2D overlay — plain DOM sibling of the Canvas, NOT drei <Html>:
     Hud.tsx                layout + Diagnostics/Coordinates/Proximity panels
     CommandDeck.tsx        bottom bar: mode, AUTO PICK/GRAB/RESET, teach pendant
     TelemetryChart.tsx     Recharts velocity/torque graph
 utils/
-  kinematics.ts   solveIK(x,y,z) — geometric IK solver. Pure, no dependencies.
+  kinematics.ts   solveIK (geometric IK) + solveFK (forward kinematics) +
+                  the arm dimensions L1/L2/L3 and MAX_REACH/MIN_REACH.
+                  Pure, no dependencies.
 ```
 
 ### Control flow — how motion happens
 1. A target position is written to `sim.ikTarget` via the store's `moveTarget`
-   action — by dragging the `TransformControls` gizmo (MANUAL), or by the FSM /
-   replay logic inside `tick()` (AUTO_PICK / REPLAY).
-2. `moveTarget` calls `solveIK` and stores the result in `sim.desiredAngles`.
+   action — by dragging the gizmo, clicking the floor/a block, or WASD/QE keys
+   (MANUAL+IK), or by the FSM / replay logic inside `tick()` (AUTO_PICK /
+   REPLAY). In FK control mode, `setJointAngle` instead writes
+   `sim.desiredAngles` directly and derives `sim.ikTarget` via `solveFK`.
+2. `moveTarget` **clamps the target into the reachable workspace**
+   (`clampTargetInPlace`: floor, outer reach sphere, inner dead zone) and sets
+   the reactive `targetClamped` flag, then calls `solveIK` and stores the
+   result in `sim.desiredAngles`. The FSM clamps its destinations the same way
+   so arrival checks can always succeed — never compare distances against an
+   unclamped destination.
 3. Each frame, `SimulationLoop` calls `tick(delta)`, which **lerps**
    `sim.smoothAngles` toward `sim.desiredAngles` (factor `0.1`).
 4. `RobotArm`'s `useFrame` reads `sim.smoothAngles` and writes them directly
@@ -107,10 +125,13 @@ of the architecture:
   object (or local `useRef` for component-private data like block physics).
   Putting per-frame values in `useState`/reactive store fields causes render
   thrashing.
-- **Robot dimensions are duplicated and must stay in sync.** `L1/L2/L3` in
-  `utils/kinematics.ts` (1, 3, 2.5) must match `BASE_HEIGHT/UPPER_ARM_LENGTH/
-  FOREARM_LENGTH` in `components/RobotArm.tsx`. Changing the model geometry
-  means updating both files or IK will be wrong.
+- **Robot dimensions are single-sourced** in `utils/kinematics.ts` (`L1/L2/L3`,
+  1 / 3 / 2.5) and imported by `RobotArm.tsx` and `WorkspaceEnvelope.tsx` —
+  change them there only.
+- **Everything the arm interacts with must be reachable**: within `MAX_REACH`
+  (5.5) of the shoulder pivot `(0, 1, 0)` — including the FSM's approach point
+  2 units above a block. Unreachable requests get clamped, so a block placed
+  outside reach can never be picked.
 - **Angles are radians internally**, converted to degrees only in the HUD
   (`RAD2DEG` in `Hud.tsx`).
 - **`solveIK` returns `null` when the target is unreachable** (`h > L2 + L3`).
@@ -147,7 +168,9 @@ console errors — R3F fails silently to the console.
   drops into Zone A hardcoded at `(-4, ·, 2)`. It is a demo, not a general planner.
 - The gravity/collision in `Block` is a simple hand-rolled approximation (floor
   at `y = 0.5`), not a physics engine.
-- Block ID 1 spawns at `(4, 0.5, 4)`, which the default camera hides behind the
-  bottom command deck — a missing-looking block is not a render bug.
+- Block ID 1 spawns at `(3.5, 0.5, 3.5)`, which the default camera mostly hides
+  behind the bottom command deck — a missing-looking block is not a render bug.
+- FK sliders can command poses below the floor — there is no arm/floor
+  collision. Deliberate for now (joint control is "honest").
 - The HUD is not responsive yet (fixed panel widths, fixed-height deck) —
   planned for the polish phase.

@@ -4,11 +4,12 @@ import { useRef } from 'react';
 import { Group } from 'three';
 import { useFrame } from '@react-three/fiber';
 import { useRobotStore } from '@/store/robotStore';
+import { L1, L2, L3 } from '@/utils/kinematics';
 
-// Robot dimensions (must match L1/L2/L3 in utils/kinematics.ts)
-const BASE_HEIGHT = 1;
-const UPPER_ARM_LENGTH = 3;
-const FOREARM_LENGTH = 2.5;
+// Robot dimensions come from the kinematics module — single source of truth
+const BASE_HEIGHT = L1;
+const UPPER_ARM_LENGTH = L2;
+const FOREARM_LENGTH = L3;
 
 /**
  * The 3-DOF arm model. Joint rotations are written directly onto the group

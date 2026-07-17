@@ -1,10 +1,13 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useRobotStore, CARRY_OFFSET_Y, type BlockConfig } from '@/store/robotStore';
+
+/** Hover height above a clicked block — keeps the target inside grab range. */
+const APPROACH_OFFSET_Y = 1;
 
 const GRAVITY = 0.02;
 const FLOOR_Y = 0.5; // resting height of a 1x1x1 block
@@ -57,8 +60,17 @@ export function Block({ data }: { data: BlockConfig }) {
         reportBlockPosition(data.id, position.current);
     });
 
+    // Click a block to send the arm hovering right above it (then G / GRAB)
+    const handleClick = (e: ThreeEvent<MouseEvent>) => {
+        e.stopPropagation();
+        if (e.delta > 4) return; // camera orbit, not a click
+        const s = useRobotStore.getState();
+        if (s.mode !== 'MANUAL' || s.controlMode !== 'IK' || s.attachedBlockId !== null) return;
+        s.moveTarget(position.current.clone().add(new THREE.Vector3(0, APPROACH_OFFSET_Y, 0)));
+    };
+
     return (
-        <mesh ref={meshRef} castShadow receiveShadow>
+        <mesh ref={meshRef} castShadow receiveShadow onClick={handleClick}>
             <boxGeometry args={[1, 1, 1]} />
             <meshStandardMaterial color={isAttached ? '#fbbf24' : data.color} />
             <Html position={[0, 1, 0]} center distanceFactor={10}>
