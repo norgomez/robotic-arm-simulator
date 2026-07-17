@@ -31,7 +31,7 @@ function OperationsPanel() {
                     disabled={mode !== 'MANUAL'}
                     className="flex-1 py-2 text-[10px] font-bold font-mono rounded transition-all border bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700 disabled:opacity-40"
                 >
-                    AUTO PICK
+                    AUTO SORT
                 </button>
                 <button
                     onClick={toggleGripper}

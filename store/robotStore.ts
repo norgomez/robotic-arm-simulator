@@ -17,7 +17,13 @@ export type AutoPhase =
     | 'RETRACT';
 export type Waypoint = { pos: THREE.Vector3; grip: boolean };
 export type TelemetryPoint = { time: number; velocity: number; torque: number };
-export type BlockConfig = { id: number; initialPos: [number, number, number]; color: string };
+export type BlockConfig = {
+    id: number;
+    initialPos: [number, number, number];
+    color: string;
+    /** The zone this block belongs in — the mission goal and AUTO SORT target. */
+    zoneId: string;
+};
 export type ToastKind = 'info' | 'success' | 'warn';
 export type Toast = { id: number; text: string; kind: ToastKind };
 
@@ -25,8 +31,8 @@ export type Toast = { id: number; text: string; kind: ToastKind };
 // NOTE: spawn positions must be reachable — inside MAX_REACH of the shoulder
 // pivot (0, L1, 0) including the FSM's approach point 2 units above the block.
 export const BLOCKS: BlockConfig[] = [
-    { id: 1, initialPos: [3.5, 0.5, 3.5], color: '#3b82f6' }, // Blue
-    { id: 2, initialPos: [4, 0.5, -2], color: '#ef4444' }, // Red
+    { id: 1, initialPos: [3.5, 0.5, 3.5], color: '#3b82f6', zoneId: 'A' }, // Blue → cyan zone
+    { id: 2, initialPos: [4, 0.5, -2], color: '#ef4444', zoneId: 'B' }, // Red → orange zone
 ];
 
 export type ZoneConfig = { id: string; center: [number, number]; color: string };
@@ -60,6 +66,9 @@ const HUD_SAMPLE_EVERY_N_FRAMES = 5; // ~12Hz at 60fps: telemetry + HUD readout 
 const TELEMETRY_WINDOW = 40;
 const MAX_TOASTS = 4;
 const PROGRAM_STORAGE_KEY = 'robot-arm-program';
+const BEST_TIME_STORAGE_KEY = 'robot-arm-best-time';
+/** A block above this height is being carried, not resting in a zone. */
+const SORTED_MAX_Y = 1;
 
 const lerp = (start: number, end: number, t: number) => start + (end - start) * t;
 
@@ -109,6 +118,8 @@ interface SimData {
     blockPositions: Map<number, THREE.Vector3>;
     /** Which block AUTO_PICK goes for. */
     autoTargetBlockId: number;
+    /** Mission timer origin (Date.now()); reset restarts it. */
+    missionStartAt: number;
 }
 
 interface RobotStore {
@@ -134,6 +145,14 @@ interface RobotStore {
     zonePulse: { zoneId: string; key: number } | null;
     /** Pending camera fly-to; key bumps so re-picking a preset re-triggers. */
     cameraGoal: { pos: [number, number, number]; key: number } | null;
+    // --- Mission (sort every block into its matching zone) ---
+    /** Ids of blocks currently resting in their assigned zones. */
+    sortedBlockIds: number[];
+    /** Elapsed mission seconds (live; frozen at the final time on completion). */
+    missionTime: number;
+    missionComplete: boolean;
+    /** Best completion time in seconds (persisted to localStorage), if any. */
+    missionBestTime: number | null;
     /** Bumped on reset; components key/effect off it to restore initial state. */
     resetKey: number;
     // Throttled snapshots for HUD readouts (updated ~12Hz, not 60fps)
@@ -169,6 +188,8 @@ interface RobotStore {
     toggleTelemetryPaused: () => void;
     /** Fly the camera to a named preset view. */
     setCameraPreset: (name: CameraPresetName) => void;
+    /** Load the persisted best time (client-only; call from a mount effect). */
+    hydrateBestTime: () => void;
     reset: () => void;
     reportBlockPosition: (id: number, pos: THREE.Vector3) => void;
     /** Advance the simulation one frame. Called from SimulationLoop's useFrame. */
@@ -212,6 +233,16 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         return null;
     };
 
+    /** Is this block resting in its assigned zone? */
+    const isBlockSorted = (block: BlockConfig): boolean => {
+        const pos = get().sim.blockPositions.get(block.id);
+        return !!pos && pos.y < SORTED_MAX_Y && zoneIdAt(pos) === block.zoneId;
+    };
+
+    /** The next block AUTO SORT should go for, if any. */
+    const nextUnsortedBlock = (): BlockConfig | null =>
+        BLOCKS.find((b) => !isBlockSorted(b)) ?? null;
+
     /**
      * Open the gripper, detaching any carried block. If the block lands in a
      * drop zone, fire the delivery pulse + toast; otherwise a plain release.
@@ -246,6 +277,10 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         hoverZoneId: null,
         zonePulse: null,
         cameraGoal: null,
+        sortedBlockIds: [],
+        missionTime: 0,
+        missionComplete: false,
+        missionBestTime: null,
         resetKey: 0,
         hudAngles: { base: 0, shoulder: 0, elbow: 0 },
         hudTarget: { x: HOME_TARGET.x, y: HOME_TARGET.y, z: HOME_TARGET.z },
@@ -259,6 +294,7 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             frameCount: 0,
             blockPositions: new Map<number, THREE.Vector3>(),
             autoTargetBlockId: 1,
+            missionStartAt: Date.now(),
         },
 
         moveTarget: (pos) => {
@@ -326,6 +362,10 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
 
         startAutoPick: () => {
             if (get().mode !== 'MANUAL') return;
+            if (!nextUnsortedBlock()) {
+                pushToast('ALL BLOCKS ALREADY SORTED');
+                return;
+            }
             // Autonomous modes drive the IK target, so leave FK control
             set({ mode: 'AUTO_PICK', autoPhase: 'IDLE', controlMode: 'IK' });
         },
@@ -421,6 +461,16 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 cameraGoal: { pos: [...CAMERA_PRESETS[name]], key: (s.cameraGoal?.key ?? 0) + 1 },
             })),
 
+        hydrateBestTime: () => {
+            if (typeof window === 'undefined' || get().missionBestTime !== null) return;
+            try {
+                const stored = Number(localStorage.getItem(BEST_TIME_STORAGE_KEY));
+                if (Number.isFinite(stored) && stored > 0) set({ missionBestTime: stored });
+            } catch {
+                /* localStorage unavailable — best time simply stays unset */
+            }
+        },
+
         toggleReplay: () => {
             const s = get();
             if (s.mode === 'REPLAY') set({ mode: 'MANUAL' });
@@ -430,6 +480,7 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         reset: () => {
             const { sim } = get();
             sim.ikTarget.copy(HOME_TARGET);
+            sim.missionStartAt = Date.now();
             set((s) => ({
                 mode: 'MANUAL',
                 controlMode: 'IK',
@@ -442,6 +493,9 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 replayIndex: 0,
                 hoverZoneId: null,
                 zonePulse: null,
+                sortedBlockIds: [],
+                missionTime: 0,
+                missionComplete: false,
                 resetKey: s.resetKey + 1,
                 hudTarget: { x: HOME_TARGET.x, y: HOME_TARGET.y, z: HOME_TARGET.z },
             }));
@@ -465,12 +519,13 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             a.shoulder = lerp(a.shoulder, d.shoulder, JOINT_LERP);
             a.elbow = lerp(a.elbow, d.elbow, JOINT_LERP);
 
-            // 2. Telemetry + throttled HUD snapshots (~12Hz)
+            // 2. Telemetry + throttled HUD snapshots + mission tracking (~12Hz)
             sim.frameCount++;
             if (sim.frameCount % HUD_SAMPLE_EVERY_N_FRAMES === 0) {
+                const state = get();
                 const velocity = Math.abs((a.shoulder - sim.prevShoulder) / delta);
                 // Simulated motor load: gravity moment on the shoulder + payload
-                const torque = Math.abs(Math.cos(a.shoulder) + (get().attachedBlockId ? 1.5 : 0));
+                const torque = Math.abs(Math.cos(a.shoulder) + (state.attachedBlockId ? 1.5 : 0));
 
                 let minDist = Infinity;
                 sim.blockPositions.forEach((pos) => {
@@ -478,15 +533,39 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                     if (dist < minDist) minDist = dist;
                 });
 
+                const carriedPos =
+                    state.attachedBlockId !== null ? sim.blockPositions.get(state.attachedBlockId) : undefined;
+
+                // Mission: which blocks rest in their assigned zones?
+                const sorted = BLOCKS.filter(isBlockSorted).map((b) => b.id);
+                const sortedChanged =
+                    sorted.length !== state.sortedBlockIds.length ||
+                    sorted.some((id, i) => id !== state.sortedBlockIds[i]);
+                const justCompleted = !state.missionComplete && sorted.length === BLOCKS.length;
+                const elapsed = (Date.now() - sim.missionStartAt) / 1000;
+                let newBest: number | null = null;
+                if (justCompleted && (state.missionBestTime === null || elapsed < state.missionBestTime)) {
+                    newBest = elapsed;
+                    try {
+                        localStorage.setItem(BEST_TIME_STORAGE_KEY, String(elapsed));
+                    } catch {
+                        /* not persisted, still counts this session */
+                    }
+                }
+
                 set((s) => {
-                    const carriedPos =
-                        s.attachedBlockId !== null ? sim.blockPositions.get(s.attachedBlockId) : undefined;
                     const next: Partial<RobotStore> = {
                         hudAngles: { base: a.base, shoulder: a.shoulder, elbow: a.elbow },
                         hudTarget: { x: sim.ikTarget.x, y: sim.ikTarget.y, z: sim.ikTarget.z },
                         minBlockDist: Number.isFinite(minDist) ? minDist : 0,
                         hoverZoneId: carriedPos ? zoneIdAt(carriedPos) : null,
                     };
+                    if (sortedChanged) next.sortedBlockIds = sorted;
+                    if (!s.missionComplete) next.missionTime = elapsed;
+                    if (justCompleted) {
+                        next.missionComplete = true;
+                        if (newBest !== null) next.missionBestTime = newBest;
+                    }
                     // HUD readouts always refresh; the graph freezes while held
                     if (!s.telemetryPaused) {
                         const telemetry = [...s.telemetry, { time: sim.frameCount, velocity, torque }];
@@ -495,17 +574,28 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                     }
                     return next;
                 });
+                if (justCompleted) {
+                    pushToast(
+                        `MISSION COMPLETE — ${elapsed.toFixed(1)}s${newBest !== null ? ' ★ NEW BEST' : ''}`,
+                        'success'
+                    );
+                }
             }
             sim.prevShoulder = a.shoulder;
 
-            // 3. Autonomous pick & place FSM
+            // 3. Autonomous sort FSM: cycles IDLE→…→LOWER_TO_DROP→IDLE per block,
+            // taking each unsorted block to ITS assigned zone, then retracts.
             if (get().mode === 'AUTO_PICK') {
                 const { autoPhase } = get();
                 const step = AUTO_SPEED * delta;
                 const dest = new THREE.Vector3();
                 let nextPhase: AutoPhase = autoPhase;
+
+                const targetCfg = BLOCKS.find((b) => b.id === sim.autoTargetBlockId) ?? BLOCKS[0];
                 const blockPos =
-                    sim.blockPositions.get(sim.autoTargetBlockId) ?? new THREE.Vector3(3.5, 0.5, 3.5);
+                    sim.blockPositions.get(sim.autoTargetBlockId) ??
+                    new THREE.Vector3(targetCfg.initialPos[0], targetCfg.initialPos[1], targetCfg.initialPos[2]);
+                const targetZone = ZONES.find((z) => z.id === targetCfg.zoneId) ?? ZONES[0];
 
                 // Clamp destinations into the workspace so arrival checks can
                 // always succeed — an unreachable waypoint (e.g. a block dropped
@@ -516,9 +606,17 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 };
 
                 switch (autoPhase) {
-                    case 'IDLE':
-                        nextPhase = 'APPROACH';
+                    case 'IDLE': {
+                        // Select the next block to sort, or retract when done
+                        const nextBlock = nextUnsortedBlock();
+                        if (nextBlock) {
+                            sim.autoTargetBlockId = nextBlock.id;
+                            nextPhase = 'APPROACH';
+                        } else {
+                            nextPhase = 'RETRACT';
+                        }
                         break;
+                    }
                     case 'APPROACH':
                         setDest(blockPos.x, blockPos.y + 2, blockPos.z);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'DESCEND';
@@ -535,14 +633,14 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'MOVE_TO_ZONE';
                         break;
                     case 'MOVE_TO_ZONE':
-                        setDest(ZONES[0].center[0], 3, ZONES[0].center[1]); // above Zone A
+                        setDest(targetZone.center[0], 3, targetZone.center[1]);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'LOWER_TO_DROP';
                         break;
                     case 'LOWER_TO_DROP':
-                        setDest(ZONES[0].center[0], 0.8, ZONES[0].center[1]);
+                        setDest(targetZone.center[0], 0.8, targetZone.center[1]);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) {
                             releaseAttached();
-                            nextPhase = 'RETRACT';
+                            nextPhase = 'IDLE'; // pick the next unsorted block
                         }
                         break;
                     case 'RETRACT':

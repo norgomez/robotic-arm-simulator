@@ -125,11 +125,23 @@ of the architecture:
   60fps, which is exactly the perf problem this design removed.
 
 ### Operating modes (`mode` state)
-- `MANUAL` — drag the gizmo to move the arm; GRAB/RELEASE and the teach pendant work here.
-- `AUTO_PICK` — an FSM (`autoPhase`) runs: `IDLE → APPROACH → DESCEND → LIFT →
-  MOVE_TO_ZONE → LOWER_TO_DROP → RETRACT`, auto-picking a block and dropping it
-  in Zone A, then returns to MANUAL.
+- `MANUAL` — drag the gizmo / click / keyboard to move the arm; GRAB/RELEASE
+  and the teach pendant work here. Sub-mode `controlMode`: IK target vs FK sliders.
+- `AUTO_PICK` (labeled **AUTO SORT** in the UI) — an FSM (`autoPhase`) cycles
+  `IDLE → APPROACH → DESCEND → LIFT → MOVE_TO_ZONE → LOWER_TO_DROP → IDLE`,
+  where `IDLE` selects the next block not resting in its assigned zone
+  (`BlockConfig.zoneId`) and delivers it there; when none remain it runs
+  `RETRACT` and returns to MANUAL.
 - `REPLAY` — plays back recorded waypoints in a loop, re-applying grip state at each point.
+
+### Mission
+The standing objective is "sort every block into its matching zone"
+(`BLOCKS[i].zoneId` ↔ `ZONES[i].id`). `tick()`'s throttled section tracks
+`sortedBlockIds` (a block counts as sorted when resting — `y < 1` — inside its
+zone), a live `missionTime`, `missionComplete`, and `missionBestTime`
+(persisted to localStorage `'robot-arm-best-time'`; hydrated client-side via
+`hydrateBestTime` to avoid SSR hydration mismatch). Manual and autonomous
+sorting both count. Reset restarts the mission but keeps the best time.
 
 ## Conventions
 
@@ -188,11 +200,8 @@ console errors — R3F fails silently to the console.
 
 ## Known Rough Edges / Gotchas
 
-- `app/layout.tsx` metadata still reads "Create Next App" — update if asked to polish.
 - In `Block`, pass vector coordinates individually (`data.initialPos[0]`, `[1]`,
   `[2]`) rather than spreading the tuple — spreading broke TS inference before.
-- AUTO_PICK always targets block id `1` (`sim.autoTargetBlockId`) and always
-  drops into Zone A hardcoded at `(-4, ·, 2)`. It is a demo, not a general planner.
 - The gravity/collision in `Block` is a simple hand-rolled approximation (floor
   at `y = 0.5`), not a physics engine.
 - Block ID 1 spawns at `(3.5, 0.5, 3.5)`, partially hidden behind the bottom

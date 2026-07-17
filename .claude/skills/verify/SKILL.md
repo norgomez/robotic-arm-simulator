@@ -43,9 +43,17 @@ Flows worth driving:
    "BASE/SHLDR/ELBOW joint angle"). Drive them with focus + ArrowLeft/Right —
    do NOT click the track (the thumb often sits where you'd click, a no-op).
    DIAGNOSTICS angles converge to the slider values; coords follow via FK.
-6. **AUTO PICK**: click the button, poll for `MODE: MANUAL` (deterministic,
-   ~5s). Expect `DELIVERED — ZONE A` then `AUTO SEQUENCE COMPLETE` toasts. Blue
-   block (ID 1) ends in Zone A; arm retracts to ~`(0,3,0)`.
+6. **AUTO SORT** (button name changed from AUTO PICK): sorts EVERY unsorted
+   block into its assigned zone (blue 1→A, red 2→B), then retracts. Poll for
+   `MODE: MANUAL` (~10s for both blocks; deterministic). Expect `DELIVERED —
+   ZONE A` and `— ZONE B`, `AUTO SEQUENCE COMPLETE`, and — when all blocks end
+   sorted — `MISSION COMPLETE — N.Ns` (with `★ NEW BEST` when applicable).
+   Clicking AUTO SORT when everything is sorted → `ALL BLOCKS ALREADY SORTED`
+   toast, mode stays MANUAL. Blocks sorted manually beforehand are skipped.
+6a. **Mission panel** (top-right): `MISSION: SORT BLOCKS`, per-block rows
+   `BLK 1 → A` with ✓/○, `TIME N.Ns` (ticks while incomplete, freezes on
+   completion), `BEST N.Ns` persisted across reloads (localStorage
+   'robot-arm-best-time'). RESET clears checks/timer but keeps BEST.
 6b. **Zone delivery**: releasing a carried block over a zone → `BLOCK N
    DELIVERED — ZONE X` toast + pulse ring; away from zones → `BLOCK N RELEASED`.
    Carrying over a zone lights it up (visual check).

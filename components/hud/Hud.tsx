@@ -1,6 +1,14 @@
 'use client';
 
-import { useRobotStore, GRAB_RANGE, CAMERA_PRESETS, type JointAngles, type CameraPresetName } from '@/store/robotStore';
+import { useEffect } from 'react';
+import {
+    useRobotStore,
+    GRAB_RANGE,
+    CAMERA_PRESETS,
+    BLOCKS,
+    type JointAngles,
+    type CameraPresetName,
+} from '@/store/robotStore';
 import { CommandDeck } from './CommandDeck';
 import { Toasts } from './Toasts';
 
@@ -132,6 +140,47 @@ function FkSliders({ disabled }: { disabled: boolean }) {
     );
 }
 
+function MissionPanel() {
+    const sorted = useRobotStore((s) => s.sortedBlockIds);
+    const complete = useRobotStore((s) => s.missionComplete);
+    const time = useRobotStore((s) => s.missionTime);
+    const best = useRobotStore((s) => s.missionBestTime);
+    const hydrateBestTime = useRobotStore((s) => s.hydrateBestTime);
+
+    // localStorage is client-only; load after mount to avoid hydration mismatch
+    useEffect(() => hydrateBestTime(), [hydrateBestTime]);
+
+    return (
+        <div className={`bg-slate-900/80 backdrop-blur border-r-2 p-3 shadow-lg ${complete ? 'border-green-500' : 'border-emerald-600'}`}>
+            <h3 className="text-[10px] text-emerald-400 font-mono mb-2 tracking-widest text-right">
+                MISSION: SORT BLOCKS
+            </h3>
+            <div className="space-y-1 mb-2">
+                {BLOCKS.map((b) => {
+                    const done = sorted.includes(b.id);
+                    return (
+                        <div key={b.id} className="flex items-center gap-2 text-[10px] font-mono">
+                            <span className="w-2 h-2 rounded-sm" style={{ background: b.color }} />
+                            <span className="text-slate-300 flex-1">
+                                BLK {b.id} → {b.zoneId}
+                            </span>
+                            <span className={done ? 'text-green-400 font-bold' : 'text-slate-600'}>
+                                {done ? '✓' : '○'}
+                            </span>
+                        </div>
+                    );
+                })}
+            </div>
+            <div className="flex justify-between items-center text-[10px] font-mono border-t border-slate-700 pt-1.5">
+                <span className={complete ? 'text-green-400 font-bold' : 'text-slate-300'}>
+                    TIME {time.toFixed(1)}s{complete && ' ✓'}
+                </span>
+                <span className="text-amber-400">BEST {best !== null ? `${best.toFixed(1)}s` : '—'}</span>
+            </div>
+        </div>
+    );
+}
+
 function CameraPanel() {
     const setCameraPreset = useRobotStore((s) => s.setCameraPreset);
     return (
@@ -204,6 +253,7 @@ export function Hud() {
 
             {/* RIGHT HUD */}
             <div className="absolute top-10 right-6 w-52 hidden sm:flex flex-col gap-2 pointer-events-auto">
+                <MissionPanel />
                 <CoordinatesPanel />
                 <ProximityPanel />
                 <CameraPanel />
