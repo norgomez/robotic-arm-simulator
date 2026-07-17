@@ -40,8 +40,13 @@ export function Block({ data }: { data: BlockConfig }) {
         const { sim, reportBlockPosition } = useRobotStore.getState();
 
         if (isAttached) {
-            // Carried: hang below the gripper
-            position.current.set(sim.ikTarget.x, sim.ikTarget.y + CARRY_OFFSET_Y, sim.ikTarget.z);
+            // Carried: hang below the ACTUAL gripper (which lags/overshoots the
+            // commanded target under the PID servo sim), not the commanded one
+            position.current.set(
+                sim.gripperPos.x,
+                sim.gripperPos.y + CARRY_OFFSET_Y,
+                sim.gripperPos.z
+            );
             velocityY.current = 0;
         } else {
             // Gravity

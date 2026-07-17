@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import * as THREE from 'three';
-import { solveIK, solveFK, L1, MAX_REACH, MIN_REACH } from '@/utils/kinematics';
+import { solveIK, solveFK, L1, L2, L3, MAX_REACH, MIN_REACH } from '@/utils/kinematics';
 
 // ---------- Types ----------
 export type JointAngles = { base: number; shoulder: number; elbow: number };
@@ -16,7 +16,9 @@ export type AutoPhase =
     | 'LOWER_TO_DROP'
     | 'RETRACT';
 export type Waypoint = { pos: THREE.Vector3; grip: boolean };
-export type TelemetryPoint = { time: number; velocity: number; torque: number };
+/** One telemetry sample: commanded vs actual shoulder angle, in degrees. */
+export type TelemetryPoint = { time: number; cmd: number; act: number };
+export type PidGains = { kp: number; ki: number; kd: number };
 export type BlockConfig = {
     id: number;
     initialPos: [number, number, number];
@@ -52,14 +54,34 @@ export type CameraPresetName = keyof typeof CAMERA_PRESETS;
 
 /** Max distance from the IK target at which a block can be grabbed. */
 export const GRAB_RANGE = 1.5;
-/** Vertical offset from the IK target to where a carried block hangs. */
+/** Vertical offset from the (actual) gripper to where a carried block hangs. */
 export const CARRY_OFFSET_Y = -0.75;
 
 const HOME_TARGET = new THREE.Vector3(2, 2, 2);
 const SHOULDER_PIVOT = new THREE.Vector3(0, L1, 0);
 const REACH_MAX = MAX_REACH - 0.05; // margin keeps solveIK comfortably solvable
-const JOINT_LERP = 0.1; // per-frame interpolation factor toward the IK solution
 const AUTO_SPEED = 6; // units/sec in AUTO_PICK
+
+// ---------- Joint servo simulation (PID + damped second-order plant) ----------
+export const DEFAULT_PID_GAINS: PidGains = { kp: 80, ki: 12, kd: 16 };
+const PLANT_DAMPING = 2; // intrinsic viscous damping of each joint
+// Actuator torque saturation. Deliberately modest: large swings rate-limit
+// smoothly instead of slamming (a 300-ish cap made big steps ring violently
+// and un-grabbable for seconds — this is also a real actuator behavior).
+const EFFORT_LIMIT = 60;
+// Servo max speed (rad/s). Without this, a saturated big swing winds up to
+// ~15 rad/s and rings for seconds. Small-step dynamics never hit this cap,
+// so tuning behaviors (overshoot/ringing/sag) stay fully visible.
+const VELOCITY_LIMIT = 4;
+const INTEGRAL_LIMIT = 1.0; // anti-windup clamp on the error integral
+const GRAVITY_SHOULDER = 6; // gravity moment amplitude — makes Ki meaningful
+const GRAVITY_ELBOW = 3;
+const PAYLOAD_FACTOR = 1.6; // carrying a block increases the gravity load
+const DT_MAX = 0.05; // clamp dt spikes (tab switches) for integration stability
+const JOINTS = ['base', 'shoulder', 'elbow'] as const;
+const RAD2DEG = 180 / Math.PI;
+
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 const REPLAY_SPEED = 4; // units/sec in REPLAY
 const ARRIVE_THRESHOLD = 0.1; // distance considered "arrived" at a destination
 const HUD_SAMPLE_EVERY_N_FRAMES = 5; // ~12Hz at 60fps: telemetry + HUD readout rate
@@ -70,7 +92,6 @@ const BEST_TIME_STORAGE_KEY = 'robot-arm-best-time';
 /** A block above this height is being carried, not resting in a zone. */
 const SORTED_MAX_Y = 1;
 
-const lerp = (start: number, end: number, t: number) => start + (end - start) * t;
 
 /**
  * Clamp a requested target into the reachable workspace (mutates `p`).
@@ -106,13 +127,18 @@ const clampTargetInPlace = (p: THREE.Vector3): boolean => {
  * to them from React, or you'll re-render at 60fps.
  */
 interface SimData {
-    /** Current IK target (gripper goal). Mutated in place. */
+    /** Commanded IK target (the setpoint source). Mutated in place. */
     ikTarget: THREE.Vector3;
-    /** Smoothed joint angles actually rendered (radians). */
+    /** ACTUAL joint angles produced by the servo simulation (radians). */
     smoothAngles: JointAngles;
-    /** Raw IK solution the arm is lerping toward (radians). */
+    /** COMMANDED joint setpoints from IK / FK sliders (radians). */
     desiredAngles: JointAngles;
-    prevShoulder: number;
+    // Per-joint controller/plant state
+    jointVel: JointAngles;
+    jointIntegral: JointAngles;
+    prevError: JointAngles;
+    /** Actual end-effector position (FK of smoothAngles). Read-only for consumers. */
+    gripperPos: THREE.Vector3;
     frameCount: number;
     /** Live block positions, reported by Block components each frame. */
     blockPositions: Map<number, THREE.Vector3>;
@@ -153,6 +179,8 @@ interface RobotStore {
     missionComplete: boolean;
     /** Best completion time in seconds (persisted to localStorage), if any. */
     missionBestTime: number | null;
+    /** Tunable joint-servo controller gains (shared by all three joints). */
+    pidGains: PidGains;
     /** Bumped on reset; components key/effect off it to restore initial state. */
     resetKey: number;
     // Throttled snapshots for HUD readouts (updated ~12Hz, not 60fps)
@@ -190,6 +218,8 @@ interface RobotStore {
     setCameraPreset: (name: CameraPresetName) => void;
     /** Load the persisted best time (client-only; call from a mount effect). */
     hydrateBestTime: () => void;
+    setPidGain: (gain: keyof PidGains, value: number) => void;
+    resetPidGains: () => void;
     reset: () => void;
     reportBlockPosition: (id: number, pos: THREE.Vector3) => void;
     /** Advance the simulation one frame. Called from SimulationLoop's useFrame. */
@@ -286,11 +316,16 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         hudTarget: { x: HOME_TARGET.x, y: HOME_TARGET.y, z: HOME_TARGET.z },
         minBlockDist: 0,
 
+        pidGains: { ...DEFAULT_PID_GAINS },
+
         sim: {
             ikTarget: HOME_TARGET.clone(),
             smoothAngles: { base: 0, shoulder: 0, elbow: 0 },
             desiredAngles: { base: 0, shoulder: 0, elbow: 0 },
-            prevShoulder: 0,
+            jointVel: { base: 0, shoulder: 0, elbow: 0 },
+            jointIntegral: { base: 0, shoulder: 0, elbow: 0 },
+            prevError: { base: 0, shoulder: 0, elbow: 0 },
+            gripperPos: new THREE.Vector3(0, L1 + L2 + L3, 0),
             frameCount: 0,
             blockPositions: new Map<number, THREE.Vector3>(),
             autoTargetBlockId: 1,
@@ -340,8 +375,9 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             set({ isGripping: true });
             let closestId: number | null = null;
             let minDist = GRAB_RANGE;
+            // Grabbing is judged from the ACTUAL gripper, not the commanded target
             sim.blockPositions.forEach((pos, id) => {
-                const dist = sim.ikTarget.distanceTo(pos);
+                const dist = sim.gripperPos.distanceTo(pos);
                 if (dist < minDist) {
                     minDist = dist;
                     closestId = id;
@@ -471,6 +507,15 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             }
         },
 
+        setPidGain: (gain, value) =>
+            set((s) => ({ pidGains: { ...s.pidGains, [gain]: value } })),
+
+        resetPidGains: () => {
+            const { sim } = get();
+            sim.jointIntegral = { base: 0, shoulder: 0, elbow: 0 };
+            set({ pidGains: { ...DEFAULT_PID_GAINS } });
+        },
+
         toggleReplay: () => {
             const s = get();
             if (s.mode === 'REPLAY') set({ mode: 'MANUAL' });
@@ -481,6 +526,10 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             const { sim } = get();
             sim.ikTarget.copy(HOME_TARGET);
             sim.missionStartAt = Date.now();
+            // Kill controller momentum/history so the arm doesn't lurch (gains persist)
+            sim.jointVel = { base: 0, shoulder: 0, elbow: 0 };
+            sim.jointIntegral = { base: 0, shoulder: 0, elbow: 0 };
+            sim.prevError = { base: 0, shoulder: 0, elbow: 0 };
             set((s) => ({
                 mode: 'MANUAL',
                 controlMode: 'IK',
@@ -510,26 +559,54 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         },
 
         tick: (delta) => {
-            const { sim } = get();
+            const { sim, pidGains } = get();
 
-            // 1. Smoothly interpolate rendered joint angles toward the IK solution
-            const a = sim.smoothAngles;
-            const d = sim.desiredAngles;
-            a.base = lerp(a.base, d.base, JOINT_LERP);
-            a.shoulder = lerp(a.shoulder, d.shoulder, JOINT_LERP);
-            a.elbow = lerp(a.elbow, d.elbow, JOINT_LERP);
+            // 1. Joint servo simulation: per-joint PID controller commanding a
+            //    damped unit-inertia joint with a gravity disturbance. Integrated
+            //    with semi-implicit Euler (stable for underdamped tunes).
+            const dt = Math.min(delta, DT_MAX);
+            const a = sim.smoothAngles; // actual
+            const d = sim.desiredAngles; // commanded
+            const payload = get().attachedBlockId !== null ? PAYLOAD_FACTOR : 1;
+            for (const j of JOINTS) {
+                const error = d[j] - a[j];
+                sim.jointIntegral[j] = clamp(
+                    sim.jointIntegral[j] + error * dt,
+                    -INTEGRAL_LIMIT,
+                    INTEGRAL_LIMIT
+                );
+                const dEdt = dt > 0 ? (error - sim.prevError[j]) / dt : 0;
+                sim.prevError[j] = error;
+                const effort = clamp(
+                    pidGains.kp * error + pidGains.ki * sim.jointIntegral[j] + pidGains.kd * dEdt,
+                    -EFFORT_LIMIT,
+                    EFFORT_LIMIT
+                );
+                // Gravity moment: pulls shoulder/elbow away from vertical; the
+                // base rotates about the vertical axis and feels none.
+                const gravity =
+                    j === 'shoulder'
+                        ? GRAVITY_SHOULDER * Math.sin(a.shoulder) * payload
+                        : j === 'elbow'
+                          ? GRAVITY_ELBOW * Math.sin(a.shoulder + a.elbow) * payload
+                          : 0;
+                const accel = effort - PLANT_DAMPING * sim.jointVel[j] - gravity;
+                sim.jointVel[j] = clamp(sim.jointVel[j] + accel * dt, -VELOCITY_LIMIT, VELOCITY_LIMIT);
+                a[j] += sim.jointVel[j] * dt;
+            }
+            // Actual end-effector position — grabbing, proximity, and carried
+            // blocks use this; the commanded target is sim.ikTarget.
+            const fk = solveFK(a.base, a.shoulder, a.elbow);
+            sim.gripperPos.set(fk.x, fk.y, fk.z);
 
             // 2. Telemetry + throttled HUD snapshots + mission tracking (~12Hz)
             sim.frameCount++;
             if (sim.frameCount % HUD_SAMPLE_EVERY_N_FRAMES === 0) {
                 const state = get();
-                const velocity = Math.abs((a.shoulder - sim.prevShoulder) / delta);
-                // Simulated motor load: gravity moment on the shoulder + payload
-                const torque = Math.abs(Math.cos(a.shoulder) + (state.attachedBlockId ? 1.5 : 0));
 
                 let minDist = Infinity;
                 sim.blockPositions.forEach((pos) => {
-                    const dist = sim.ikTarget.distanceTo(pos);
+                    const dist = sim.gripperPos.distanceTo(pos);
                     if (dist < minDist) minDist = dist;
                 });
 
@@ -568,7 +645,10 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                     }
                     // HUD readouts always refresh; the graph freezes while held
                     if (!s.telemetryPaused) {
-                        const telemetry = [...s.telemetry, { time: sim.frameCount, velocity, torque }];
+                        const telemetry = [
+                            ...s.telemetry,
+                            { time: sim.frameCount, cmd: d.shoulder * RAD2DEG, act: a.shoulder * RAD2DEG },
+                        ];
                         if (telemetry.length > TELEMETRY_WINDOW) telemetry.shift();
                         next.telemetry = telemetry;
                     }
@@ -581,7 +661,6 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                     );
                 }
             }
-            sim.prevShoulder = a.shoulder;
 
             // 3. Autonomous sort FSM: cycles IDLE→…→LOWER_TO_DROP→IDLE per block,
             // taking each unsorted block to ITS assigned zone, then retracts.

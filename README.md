@@ -4,6 +4,7 @@ A 3-DOF robotic arm simulation built with **Next.js**, **React Three Fiber (Thre
 
 ## Features
 
+* **Simulated PID joint servos:** Each joint is a PID-controlled damped plant with actuator saturation, a speed limit, anti-windup, and gravity load (heavier while carrying). Tune Kp/Ki/Kd live and watch commanded-vs-actual response — overshoot, ringing, sag, and settling — on the servo telemetry graph.
 * **Inverse Kinematics (IK):** Geometric 3-DOF solver with workspace clamping — a visible reach envelope, a glowing target marker, and a REACH LIMIT warning when you push past the boundary.
 * **Forward Kinematics (FK):** Switch to direct joint control with per-joint sliders; the end-effector target stays in sync.
 * **Multiple input methods:** Drag the 3D gizmo, click the floor or a block to send the arm there, or drive with the keyboard (WASD/QE move, G grip, R record, Space replay).

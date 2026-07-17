@@ -6,8 +6,10 @@ import {
     GRAB_RANGE,
     CAMERA_PRESETS,
     BLOCKS,
+    DEFAULT_PID_GAINS,
     type JointAngles,
     type CameraPresetName,
+    type PidGains,
 } from '@/store/robotStore';
 import { CommandDeck } from './CommandDeck';
 import { Toasts } from './Toasts';
@@ -140,6 +142,60 @@ function FkSliders({ disabled }: { disabled: boolean }) {
     );
 }
 
+// Slider ranges chosen so both good tunes and instructive bad ones are reachable
+const PID_RANGES: Record<keyof PidGains, [number, number]> = {
+    kp: [5, 200],
+    ki: [0, 100],
+    kd: [0, 40],
+};
+const PID_LABELS: Record<keyof PidGains, string> = { kp: 'KP', ki: 'KI', kd: 'KD' };
+
+function PidPanel() {
+    const gains = useRobotStore((s) => s.pidGains);
+    const setPidGain = useRobotStore((s) => s.setPidGain);
+    const resetPidGains = useRobotStore((s) => s.resetPidGains);
+
+    return (
+        <div className="bg-slate-900/80 backdrop-blur border-l-2 border-amber-500 p-3 shadow-lg">
+            <div className="flex justify-between items-center mb-2">
+                <h3 className="text-[10px] text-amber-400 font-mono tracking-widest">PID TUNING</h3>
+                <button
+                    onClick={resetPidGains}
+                    className="px-1.5 py-0.5 text-[8px] font-bold font-mono rounded border bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-all"
+                >
+                    DEFAULTS
+                </button>
+            </div>
+            <div className="space-y-2">
+                {(Object.keys(PID_RANGES) as (keyof PidGains)[]).map((gain) => {
+                    const [min, max] = PID_RANGES[gain];
+                    return (
+                        <div key={gain}>
+                            <div className="flex justify-between text-[9px] font-mono mb-0.5">
+                                <span className="text-slate-400">{PID_LABELS[gain]}</span>
+                                <span className="text-white">{gains[gain]}</span>
+                            </div>
+                            <input
+                                type="range"
+                                aria-label={`${PID_LABELS[gain]} gain`}
+                                min={min}
+                                max={max}
+                                step={1}
+                                value={gains[gain]}
+                                onChange={(e) => setPidGain(gain, Number(e.target.value))}
+                                className="w-full h-1 accent-amber-400 cursor-pointer"
+                            />
+                        </div>
+                    );
+                })}
+            </div>
+            <p className="mt-2 text-[8px] font-mono text-slate-500 leading-snug">
+                joint servos · watch CMD vs ACT · defaults {DEFAULT_PID_GAINS.kp}/{DEFAULT_PID_GAINS.ki}/{DEFAULT_PID_GAINS.kd}
+            </p>
+        </div>
+    );
+}
+
 function MissionPanel() {
     const sorted = useRobotStore((s) => s.sortedBlockIds);
     const complete = useRobotStore((s) => s.missionComplete);
@@ -248,6 +304,7 @@ export function Hud() {
             <div className="absolute top-10 left-6 w-48 hidden sm:flex flex-col gap-2 pointer-events-auto">
                 <DiagnosticsPanel />
                 <ControlModePanel />
+                <PidPanel />
                 <ControlsHint />
             </div>
 

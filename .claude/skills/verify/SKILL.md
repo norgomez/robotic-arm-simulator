@@ -70,8 +70,15 @@ Flows worth driving:
    `PROGRAM SAVED/LOADED`, `SYSTEM RESET`. Assert promptly after the action.
 9. **Stepper**: `APPR DESC LIFT MOVE DROP RETR` labels always in the deck;
    phases light up during AUTO_PICK (visual check via screenshot).
-10. **Telemetry**: `⏸ HOLD` freezes the `VEL x.xx` readout even while the arm
-    moves; `▶ RUN` resumes. `▼ HIDE` collapses the deck to a slim bar.
+10. **Telemetry (SERVO)**: graphs commanded (dashed amber) vs actual (cyan)
+    shoulder angle; `ERR n.n°` readout in the header. `⏸ HOLD` freezes graph
+    sampling even while the arm moves; `▶ RUN` resumes. `▼ HIDE` collapses the
+    deck to a slim bar.
+10a. **PID tuning** (left HUD): sliders `role=slider` named "KP/KI/KD gain"
+    (drive with focus + Home/End/arrows), DEFAULTS button restores 80/12/16.
+    KP=200 + KI=KD=0 then a step → sustained ringing in ACT and a fluctuating
+    ERR; defaults → smooth settle. Grabbing a block bumps ERR briefly (payload
+    gravity sag).
 11. **RESET SYSTEM**: coords back to `(2,2,2)`, points 0, blocks respawn, IK mode.
 
 Always collect `console`/`pageerror` events — R3F renders errors silently to
@@ -80,5 +87,8 @@ the console, not the page.
 ## Gotchas
 
 - Wait ~3s after `networkidle` before interacting: the Canvas mounts client-side.
+- The headless renderer runs well below 60fps and tick() clamps dt, so SIM TIME
+  RUNS SLOWER THAN WALL TIME. Never use fixed waits for arm motion — after a
+  big move, poll `PROXIMITY` (or coordinates) until arrival before grabbing.
 - Block ID 1 at `(3.5, 0.5, 3.5)` is initially mostly hidden behind the bottom
   command deck at the default camera; don't assume a missing mesh means a render bug.

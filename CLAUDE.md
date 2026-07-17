@@ -45,8 +45,9 @@ app/
   globals.css     Tailwind v4 import + light/dark CSS variables.
 store/
   robotStore.ts   THE core. Zustand store: all state, all actions, and tick() —
-                  the per-frame sim step (lerp, telemetry, AUTO_PICK FSM, replay).
-                  Also exports BLOCKS config, GRAB_RANGE, CARRY_OFFSET_Y, types.
+                  the per-frame sim step (PID joint servos, telemetry, AUTO_PICK
+                  FSM, replay, mission tracking). Also exports BLOCKS/ZONES
+                  config, GRAB_RANGE, CARRY_OFFSET_Y, DEFAULT_PID_GAINS, types.
 components/
   RobotArm.tsx    3D arm model: PBR metal materials, RoundedBox limbs, animated
                   gripper fingers, drei <Trail> on the wrist. Joint rotations
@@ -81,8 +82,8 @@ components/
     TeachPendant.tsx       waypoint list (grip toggle / reorder / delete per row,
                            active-row highlight during replay) + save/load/clear
                            (localStorage key 'robot-arm-program') + REC/PLAY
-    TelemetryChart.tsx     exports TelemetryPanel: velocity/torque graph with
-                           value axis, latest readouts, HOLD/RUN toggle
+    TelemetryChart.tsx     exports TelemetryPanel: commanded-vs-actual shoulder
+                           angle graph (SERVO), live ERR readout, HOLD/RUN toggle
     Toasts.tsx             transient event chips (auto-dismiss ~2.6s), top-center
 utils/
   kinematics.ts   solveIK (geometric IK) + solveFK (forward kinematics) +
@@ -102,10 +103,26 @@ utils/
    result in `sim.desiredAngles`. The FSM clamps its destinations the same way
    so arrival checks can always succeed — never compare distances against an
    unclamped destination.
-3. Each frame, `SimulationLoop` calls `tick(delta)`, which **lerps**
-   `sim.smoothAngles` toward `sim.desiredAngles` (factor `0.1`).
-4. `RobotArm`'s `useFrame` reads `sim.smoothAngles` and writes them directly
-   onto the joint group refs — no React re-render involved.
+3. Each frame, `SimulationLoop` calls `tick(delta)`, which runs the **joint
+   servo simulation**: a per-joint PID controller (reactive `pidGains`, tunable
+   in the HUD) drives a damped unit-inertia plant with actuator saturation
+   (`EFFORT_LIMIT`), a servo speed cap (`VELOCITY_LIMIT`), anti-windup, and a
+   gravity moment on shoulder/elbow (scaled up while carrying a block).
+   Integration is semi-implicit Euler with a `dt` clamp.
+4. `RobotArm`'s `useFrame` reads `sim.smoothAngles` (the **actual** angles the
+   servos produced) and writes them onto the joint group refs — no React
+   re-render involved.
+
+### Commanded vs actual — which position to use
+The servo sim makes the commanded/actual distinction real; use the right one:
+- `sim.ikTarget` / `sim.desiredAngles` — **commanded**. Used by the FSM and
+  replay arrival checks (the planner's space — never stalls from a bad tune),
+  the target marker, the gizmo, and waypoint recording.
+- `sim.gripperPos` (FK of `sim.smoothAngles`) — **actual** end effector. Used
+  for grabbing (`tryGrabClosest`), the proximity readout, and carried block
+  positions. Physically honest: you can't grab with a gripper that isn't there.
+- Telemetry graphs commanded vs actual shoulder angle (degrees) — overshoot,
+  ringing, gravity sag, and settling are the point, not noise.
 
 ### State model — the critical convention
 The store has **two kinds of state**; keeping them straight is the whole point
