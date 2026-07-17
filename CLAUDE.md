@@ -18,9 +18,10 @@ inside the R3F render loop.
   (`reactCompiler: true` in `next.config.ts`).
 - **TypeScript 5** (`strict: true`).
 - **React Three Fiber** (`@react-three/fiber`) + **drei** (`@react-three/drei`) over **Three.js** for 3D.
+- **zustand** for all simulation/UI state (`store/robotStore.ts`).
 - **Recharts** for the live telemetry graph.
 - **Tailwind CSS v4** (via `@tailwindcss/postcss`; imported in `app/globals.css`) for the 2D HUD/overlay.
-- `zustand` and `uuid` are installed but **not currently used** — no global store exists yet; all state is local React state/refs.
+- `uuid` is installed but **not currently used**.
 
 ## Commands
 
@@ -40,37 +41,55 @@ There is **no test suite** and no test runner configured. Do not claim tests pas
 ```
 app/
   layout.tsx      Root layout; Geist fonts + globals.css. (metadata still says "Create Next App".)
-  page.tsx        THE app. Canvas setup + all simulation logic and HUD. ~460 lines.
+  page.tsx        Thin composition: <Canvas> + scene components + <Hud> DOM overlay.
   globals.css     Tailwind v4 import + light/dark CSS variables.
+store/
+  robotStore.ts   THE core. Zustand store: all state, all actions, and tick() —
+                  the per-frame sim step (lerp, telemetry, AUTO_PICK FSM, replay).
+                  Also exports BLOCKS config, GRAB_RANGE, CARRY_OFFSET_Y, types.
 components/
-  RobotArm.tsx    Pure 3D model: nested <group> transforms driven by joint angles. No logic.
+  RobotArm.tsx    3D arm model. Joint rotations written onto group refs each
+                  frame from store sim state — zero React re-renders per frame.
+  scene/          Everything rendered inside the Canvas:
+    SimulationLoop.tsx     null component; calls store.tick(delta) via useFrame
+    Block.tsx              physics-lite cube (gravity/floor); follows gripper
+                           when attached; reports live position to the store
+    DropZones.tsx          static Zone A / Zone B ring markers
+    WaypointVisualizer.tsx dashed path + numbered spheres for waypoints
+    TargetControl.tsx      TransformControls gizmo (MANUAL mode only); remounts
+                           on mode change/reset to pick up the target position
+  hud/            The 2D overlay — plain DOM sibling of the Canvas, NOT drei <Html>:
+    Hud.tsx                layout + Diagnostics/Coordinates/Proximity panels
+    CommandDeck.tsx        bottom bar: mode, AUTO PICK/GRAB/RESET, teach pendant
+    TelemetryChart.tsx     Recharts velocity/torque graph
 utils/
   kinematics.ts   solveIK(x,y,z) — geometric IK solver. Pure, no dependencies.
 ```
 
-Everything of substance lives in **`app/page.tsx`**. It is intentionally
-monolithic; when changing behavior, that is almost always the file to edit.
-
-### `app/page.tsx` structure (top to bottom)
-- `INITIAL_BLOCKS` — the pick-and-place blocks (id, initial position, color).
-- `Block` — a physics-lite cube (gravity + floor collision) that follows the
-  gripper when `attachedId` matches its id. Reports its live position up via
-  `onPosUpdate` into `blockPositions` (a `Map` ref).
-- `DropZones` — the static Zone A / Zone B ring markers.
-- `WaypointVisualizer` — dashed line + numbered spheres for recorded waypoints.
-- `RobotController` — **the core**. Owns all state and the single `useFrame`
-  loop. Drives IK, angle smoothing, telemetry, the AUTO_PICK FSM, and REPLAY.
-- Sub-components: `DataRow`, `RechartsLineChart`, `TargetControl`.
-- `RobotPage` (default export) — `<Canvas>`, lights, grid, `OrbitControls`.
-
 ### Control flow — how motion happens
-1. A target position (`ikTarget`, a `THREE.Vector3`) is set — by dragging the
-   `TransformControls` gizmo (MANUAL), or programmatically (AUTO_PICK / REPLAY).
-2. `handleTargetMove` calls `solveIK` and writes the result to the
-   `desiredAngles` ref.
-3. Each frame, `useFrame` **lerps** `smoothAngles` toward `desiredAngles`
-   (factor `0.1`) for smooth motion, then passes `smoothAngles` to `<RobotArm>`.
-4. `RobotArm` applies angles as nested group rotations to render the pose.
+1. A target position is written to `sim.ikTarget` via the store's `moveTarget`
+   action — by dragging the `TransformControls` gizmo (MANUAL), or by the FSM /
+   replay logic inside `tick()` (AUTO_PICK / REPLAY).
+2. `moveTarget` calls `solveIK` and stores the result in `sim.desiredAngles`.
+3. Each frame, `SimulationLoop` calls `tick(delta)`, which **lerps**
+   `sim.smoothAngles` toward `sim.desiredAngles` (factor `0.1`).
+4. `RobotArm`'s `useFrame` reads `sim.smoothAngles` and writes them directly
+   onto the joint group refs — no React re-render involved.
+
+### State model — the critical convention
+The store has **two kinds of state**; keeping them straight is the whole point
+of the architecture:
+
+- **Reactive state** (`mode`, `isGripping`, `waypoints`, `telemetry`,
+  `hudAngles`, …) — updated via `set()`, subscribed from components with
+  **narrow selectors** (`useRobotStore((s) => s.mode)`). HUD readouts
+  (`hudAngles`, `hudTarget`, `minBlockDist`) are throttled snapshots refreshed
+  every 5th frame (~12Hz), alongside telemetry.
+- **`sim` — mutable per-frame data** (`ikTarget`, `smoothAngles`,
+  `desiredAngles`, `blockPositions`, …) — mutated in place inside `tick()` and
+  read transiently via `useRobotStore.getState().sim` inside `useFrame`
+  callbacks. **Never subscribe to `sim` from React** — that would re-render at
+  60fps, which is exactly the perf problem this design removed.
 
 ### Operating modes (`mode` state)
 - `MANUAL` — drag the gizmo to move the arm; GRAB/RELEASE and the teach pendant work here.
@@ -81,29 +100,28 @@ monolithic; when changing behavior, that is almost always the file to edit.
 
 ## Conventions
 
-- **Client components only.** `app/page.tsx` starts with `'use client'`. Anything
-  touching R3F hooks (`useFrame`), browser APIs, or interactive state must be a
-  client component.
-- **Per-frame mutable state goes in refs, not `useState`.** Values that change
-  every frame but shouldn't trigger React re-renders (`desiredAngles`,
-  `blockPositions`, `prevAngles`, `frameCount`) are `useRef`. Follow this pattern
-  — putting per-frame values in `useState` will cause render thrashing.
+- **Client components only.** Every component file starts with `'use client'`.
+  Anything touching R3F hooks (`useFrame`), browser APIs, or interactive state
+  must be a client component.
+- **Per-frame values never go through React state.** Use the store's `sim`
+  object (or local `useRef` for component-private data like block physics).
+  Putting per-frame values in `useState`/reactive store fields causes render
+  thrashing.
 - **Robot dimensions are duplicated and must stay in sync.** `L1/L2/L3` in
-  `utils/kinematics.ts` (1, 3, 2.5) must match `baseHeight/upperArmLength/
-  forearmLength` in `components/RobotArm.tsx`. Changing the model geometry means
-  updating both files or IK will be wrong.
-- **Angles are radians internally**, converted to degrees for the HUD by
-  multiplying by `57.29` (≈180/π).
+  `utils/kinematics.ts` (1, 3, 2.5) must match `BASE_HEIGHT/UPPER_ARM_LENGTH/
+  FOREARM_LENGTH` in `components/RobotArm.tsx`. Changing the model geometry
+  means updating both files or IK will be wrong.
+- **Angles are radians internally**, converted to degrees only in the HUD
+  (`RAD2DEG` in `Hud.tsx`).
 - **`solveIK` returns `null` when the target is unreachable** (`h > L2 + L3`).
-  Callers must null-check before assigning to `desiredAngles` (see
-  `handleTargetMove`) — never assume a solution exists.
-- **Styling:** 3D via R3F/Three.js; all 2D UI is Tailwind utility classes inside
-  a drei `<Html fullscreen>` overlay. The aesthetic is a dark "mission control"
-  HUD (slate/cyan/amber, `font-mono`).
-- `any` is used liberally on component props in `page.tsx`. It's the existing
-  house style here; prefer typing new code, but don't feel obligated to refactor
-  untouched code to satisfy stricter typing.
-- Import alias `@/*` maps to the repo root (see `tsconfig.json`).
+  Callers must null-check before using the solution (see the store's
+  `moveTarget`) — never assume a solution exists.
+- **Styling:** 3D via R3F/Three.js. The 2D HUD is a plain DOM overlay
+  (`pointer-events-none` container, `pointer-events-auto` panels) — only
+  3D-anchored labels (block IDs, zone names, waypoint numbers) use drei
+  `<Html>`. The aesthetic is a dark "mission control" HUD (slate/cyan/amber,
+  `font-mono`).
+- Imports use the `@/*` alias (maps to repo root, see `tsconfig.json`).
 
 ## Development Workflow
 
@@ -113,13 +131,23 @@ monolithic; when changing behavior, that is almost always the file to edit.
 - After code changes, run `npm run build` and `npm run lint` before committing.
 - `.idea/` (JetBrains) is committed; leave it alone unless asked.
 
+## Verifying Changes
+
+Use the project verify skill (`.claude/skills/verify/SKILL.md`): run the dev
+server and drive the app headlessly with Playwright. All app state (mode,
+coordinates, waypoint count) is readable from the HUD text; collect browser
+console errors — R3F fails silently to the console.
+
 ## Known Rough Edges / Gotchas
 
 - `app/layout.tsx` metadata still reads "Create Next App" — update if asked to polish.
-- The `Block` component predates a fix noted inline: pass vector coordinates
-  individually (`data.initialPos[0]`, `[1]`, `[2]`) rather than spreading, to
-  avoid a prior TypeScript spread error.
-- AUTO_PICK always targets block id `1` (`targetBlockIdForAuto`) and always
-  drops into Zone A hardcoded at `[-4, 3, 2]`. It is a demo, not a general planner.
+- In `Block`, pass vector coordinates individually (`data.initialPos[0]`, `[1]`,
+  `[2]`) rather than spreading the tuple — spreading broke TS inference before.
+- AUTO_PICK always targets block id `1` (`sim.autoTargetBlockId`) and always
+  drops into Zone A hardcoded at `(-4, ·, 2)`. It is a demo, not a general planner.
 - The gravity/collision in `Block` is a simple hand-rolled approximation (floor
   at `y = 0.5`), not a physics engine.
+- Block ID 1 spawns at `(4, 0.5, 4)`, which the default camera hides behind the
+  bottom command deck — a missing-looking block is not a render bug.
+- The HUD is not responsive yet (fixed panel widths, fixed-height deck) —
+  planned for the polish phase.
