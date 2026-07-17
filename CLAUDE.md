@@ -48,14 +48,19 @@ store/
                   the per-frame sim step (lerp, telemetry, AUTO_PICK FSM, replay).
                   Also exports BLOCKS config, GRAB_RANGE, CARRY_OFFSET_Y, types.
 components/
-  RobotArm.tsx    3D arm model. Joint rotations written onto group refs each
-                  frame from store sim state — zero React re-renders per frame.
+  RobotArm.tsx    3D arm model: PBR metal materials, RoundedBox limbs, animated
+                  gripper fingers, drei <Trail> on the wrist. Joint rotations
+                  written onto group refs each frame from store sim state —
+                  zero React re-renders per frame.
   scene/          Everything rendered inside the Canvas:
     SimulationLoop.tsx     null component; calls store.tick(delta) via useFrame
     Block.tsx              physics-lite cube (gravity/floor); follows gripper
                            when attached; reports live position to the store;
                            click sends the arm hovering above it
-    DropZones.tsx          static Zone A / Zone B ring markers
+    DropZones.tsx          zone rings driven by the store's ZONES config, with
+                           carried-block hover glow + one-shot delivery pulse
+    CameraRig.tsx          flies the camera to store cameraGoal presets, then
+                           hands control back to OrbitControls
     WaypointVisualizer.tsx dashed path + numbered spheres for waypoints
     TargetControl.tsx      TransformControls gizmo (MANUAL + IK control only).
                            Bidirectional sync: drags feed moveTarget(); when not
@@ -142,6 +147,18 @@ of the architecture:
   (5.5) of the shoulder pivot `(0, 1, 0)` — including the FSM's approach point
   2 units above a block. Unreachable requests get clamped, so a block placed
   outside reach can never be picked.
+- **All gripper releases must go through the store's `releaseAttached` helper**
+  — it detects zone deliveries (pulse + toast) vs plain releases. Never set
+  `attachedBlockId: null` directly.
+- **`moveTowards` clamps its step to the remaining distance.** Never re-introduce
+  overshoot: with AUTO_SPEED at 60fps the step ≈ ARRIVE_THRESHOLD, so an
+  overshooting target oscillates around the destination and arrival checks
+  become frame-timing dependent (this was a real stall bug).
+- **Lighting is fully procedural** (`Environment` + `Lightformer` in
+  `page.tsx`). Do not use `Environment preset="..."` — presets fetch HDRs from
+  a CDN at runtime and break offline.
+- Drop zones and camera views are config: `ZONES`/`ZONE_RADIUS` and
+  `CAMERA_PRESETS` in the store.
 - **Angles are radians internally**, converted to degrees only in the HUD
   (`RAD2DEG` in `Hud.tsx`).
 - **`solveIK` returns `null` when the target is unreachable** (`h > L2 + L3`).
@@ -178,9 +195,9 @@ console errors — R3F fails silently to the console.
   drops into Zone A hardcoded at `(-4, ·, 2)`. It is a demo, not a general planner.
 - The gravity/collision in `Block` is a simple hand-rolled approximation (floor
   at `y = 0.5`), not a physics engine.
-- Block ID 1 spawns at `(3.5, 0.5, 3.5)`, which the default camera mostly hides
-  behind the bottom command deck — a missing-looking block is not a render bug.
+- Block ID 1 spawns at `(3.5, 0.5, 3.5)`, partially hidden behind the bottom
+  command deck at the default camera — a missing-looking block is not a render bug.
 - FK sliders can command poses below the floor — there is no arm/floor
   collision. Deliberate for now (joint control is "honest").
-- The HUD is not responsive yet (fixed panel widths, fixed-height deck) —
-  planned for the polish phase.
+- Responsive behavior: side HUD panels hide below `sm`; the deck reduces to the
+  operations column below `md`. The desktop layout is the primary target.

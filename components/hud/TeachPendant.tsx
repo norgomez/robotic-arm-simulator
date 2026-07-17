@@ -46,7 +46,7 @@ export function TeachPendant() {
     const editable = mode === 'MANUAL';
 
     return (
-        <div className="w-1/3 h-full p-3 flex flex-col gap-1.5">
+        <div className="w-1/3 h-full p-3 hidden md:flex flex-col gap-1.5">
             <div className="flex justify-between items-center text-[10px] text-cyan-400 font-mono border-b border-slate-700 pb-1">
                 <span>TEACH PENDANT</span>
                 <div className="flex gap-1">

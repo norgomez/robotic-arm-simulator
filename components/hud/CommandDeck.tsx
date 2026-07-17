@@ -15,7 +15,7 @@ function OperationsPanel() {
     const reset = useRobotStore((s) => s.reset);
 
     return (
-        <div className="w-1/3 h-full p-3 flex flex-col justify-center items-center gap-2 border-r border-slate-700/50">
+        <div className="w-full md:w-1/3 h-full p-3 flex flex-col justify-center items-center gap-2 md:border-r border-slate-700/50">
             <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${mode !== 'MANUAL' ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`} />
                 <span className="text-xs font-mono text-slate-300 tracking-wider">

@@ -1,6 +1,6 @@
 'use client';
 
-import { useRobotStore, GRAB_RANGE, type JointAngles } from '@/store/robotStore';
+import { useRobotStore, GRAB_RANGE, CAMERA_PRESETS, type JointAngles, type CameraPresetName } from '@/store/robotStore';
 import { CommandDeck } from './CommandDeck';
 import { Toasts } from './Toasts';
 
@@ -132,6 +132,26 @@ function FkSliders({ disabled }: { disabled: boolean }) {
     );
 }
 
+function CameraPanel() {
+    const setCameraPreset = useRobotStore((s) => s.setCameraPreset);
+    return (
+        <div className="bg-slate-900/80 backdrop-blur border-r-2 border-slate-500 p-3 shadow-lg">
+            <h3 className="text-[10px] text-slate-400 font-mono mb-2 tracking-widest text-right">CAMERA</h3>
+            <div className="flex gap-1">
+                {(Object.keys(CAMERA_PRESETS) as CameraPresetName[]).map((name) => (
+                    <button
+                        key={name}
+                        onClick={() => setCameraPreset(name)}
+                        className="flex-1 py-1 text-[8px] font-bold font-mono rounded border bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-all"
+                    >
+                        {name}
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 function ControlsHint() {
     return (
         <div className="bg-slate-900/60 backdrop-blur border-l-2 border-slate-600 p-2 shadow-lg text-[8px] font-mono text-slate-400 leading-relaxed">
@@ -176,16 +196,17 @@ export function Hud() {
     return (
         <div className="pointer-events-none absolute inset-0 z-10">
             {/* LEFT HUD */}
-            <div className="absolute top-10 left-6 w-48 flex flex-col gap-2 pointer-events-auto">
+            <div className="absolute top-10 left-6 w-48 hidden sm:flex flex-col gap-2 pointer-events-auto">
                 <DiagnosticsPanel />
                 <ControlModePanel />
                 <ControlsHint />
             </div>
 
             {/* RIGHT HUD */}
-            <div className="absolute top-10 right-6 w-52 flex flex-col gap-2 pointer-events-auto">
+            <div className="absolute top-10 right-6 w-52 hidden sm:flex flex-col gap-2 pointer-events-auto">
                 <CoordinatesPanel />
                 <ProximityPanel />
+                <CameraPanel />
             </div>
 
             {/* EVENT TOASTS */}

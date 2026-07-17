@@ -72,7 +72,7 @@ export function Block({ data }: { data: BlockConfig }) {
     return (
         <mesh ref={meshRef} castShadow receiveShadow onClick={handleClick}>
             <boxGeometry args={[1, 1, 1]} />
-            <meshStandardMaterial color={isAttached ? '#fbbf24' : data.color} />
+            <meshStandardMaterial color={isAttached ? '#fbbf24' : data.color} metalness={0.2} roughness={0.35} />
             <Html position={[0, 1, 0]} center distanceFactor={10}>
                 <div className="text-[8px] font-bold text-white bg-black/40 px-1 rounded">
                     ID: {data.id}

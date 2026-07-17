@@ -29,6 +29,21 @@ export const BLOCKS: BlockConfig[] = [
     { id: 2, initialPos: [4, 0.5, -2], color: '#ef4444' }, // Red
 ];
 
+export type ZoneConfig = { id: string; center: [number, number]; color: string };
+export const ZONES: ZoneConfig[] = [
+    { id: 'A', center: [-4, 2], color: '#06b6d4' }, // Cyan
+    { id: 'B', center: [-4, -2], color: '#f97316' }, // Orange
+];
+export const ZONE_RADIUS = 1.2;
+
+export const CAMERA_PRESETS = {
+    ISO: [8, 8, 8],
+    TOP: [0.01, 16, 0.01],
+    SIDE: [13, 4, 0],
+    FRONT: [0, 4, 13],
+} as const;
+export type CameraPresetName = keyof typeof CAMERA_PRESETS;
+
 /** Max distance from the IK target at which a block can be grabbed. */
 export const GRAB_RANGE = 1.5;
 /** Vertical offset from the IK target to where a carried block hangs. */
@@ -113,6 +128,12 @@ interface RobotStore {
     telemetryPaused: boolean;
     /** Transient event notifications; auto-dismissed by the Toasts component. */
     toasts: Toast[];
+    /** Zone currently under a carried block (hover highlight), else null. */
+    hoverZoneId: string | null;
+    /** One-shot drop-success animation trigger; key bumps per delivery. */
+    zonePulse: { zoneId: string; key: number } | null;
+    /** Pending camera fly-to; key bumps so re-picking a preset re-triggers. */
+    cameraGoal: { pos: [number, number, number]; key: number } | null;
     /** Bumped on reset; components key/effect off it to restore initial state. */
     resetKey: number;
     // Throttled snapshots for HUD readouts (updated ~12Hz, not 60fps)
@@ -146,6 +167,8 @@ interface RobotStore {
     pushToast: (text: string, kind?: ToastKind) => void;
     dismissToast: (id: number) => void;
     toggleTelemetryPaused: () => void;
+    /** Fly the camera to a named preset view. */
+    setCameraPreset: (name: CameraPresetName) => void;
     reset: () => void;
     reportBlockPosition: (id: number, pos: THREE.Vector3) => void;
     /** Advance the simulation one frame. Called from SimulationLoop's useFrame. */
@@ -153,11 +176,21 @@ interface RobotStore {
 }
 
 export const useRobotStore = create<RobotStore>()((set, get) => {
-    /** Step the IK target toward `dest` at `step` units (already delta-scaled). */
+    /**
+     * Step the IK target toward `dest` at `step` units (already delta-scaled).
+     * The step is clamped to the remaining distance — overshooting would make
+     * the target oscillate around `dest` and arrival checks frame-timing
+     * dependent (step at 60fps ≈ ARRIVE_THRESHOLD).
+     */
     const moveTowards = (dest: THREE.Vector3, step: number) => {
         const { sim, moveTarget } = get();
-        const dir = new THREE.Vector3().subVectors(dest, sim.ikTarget).normalize();
-        moveTarget(sim.ikTarget.clone().add(dir.multiplyScalar(step)));
+        const remaining = sim.ikTarget.distanceTo(dest);
+        if (remaining <= step) {
+            moveTarget(dest.clone());
+            return;
+        }
+        const dir = new THREE.Vector3().subVectors(dest, sim.ikTarget).multiplyScalar(step / remaining);
+        moveTarget(sim.ikTarget.clone().add(dir));
     };
 
     let toastSeq = 0;
@@ -167,6 +200,34 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             while (toasts.length > MAX_TOASTS) toasts.shift();
             return { toasts };
         });
+    };
+
+    /** Which drop zone (if any) is under this position, by horizontal distance. */
+    const zoneIdAt = (pos: THREE.Vector3): string | null => {
+        for (const z of ZONES) {
+            const dx = pos.x - z.center[0];
+            const dz = pos.z - z.center[1];
+            if (Math.sqrt(dx * dx + dz * dz) <= ZONE_RADIUS) return z.id;
+        }
+        return null;
+    };
+
+    /**
+     * Open the gripper, detaching any carried block. If the block lands in a
+     * drop zone, fire the delivery pulse + toast; otherwise a plain release.
+     */
+    const releaseAttached = () => {
+        const id = get().attachedBlockId;
+        set({ attachedBlockId: null, isGripping: false });
+        if (id === null) return;
+        const pos = get().sim.blockPositions.get(id);
+        const zone = pos ? zoneIdAt(pos) : null;
+        if (zone) {
+            set((s) => ({ zonePulse: { zoneId: zone, key: (s.zonePulse?.key ?? 0) + 1 } }));
+            pushToast(`BLOCK ${id} DELIVERED — ZONE ${zone}`, 'success');
+        } else {
+            pushToast(`BLOCK ${id} RELEASED`);
+        }
     };
 
     return {
@@ -182,6 +243,9 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         telemetry: [],
         telemetryPaused: false,
         toasts: [],
+        hoverZoneId: null,
+        zonePulse: null,
+        cameraGoal: null,
         resetKey: 0,
         hudAngles: { base: 0, shoulder: 0, elbow: 0 },
         hudTarget: { x: HOME_TARGET.x, y: HOME_TARGET.y, z: HOME_TARGET.z },
@@ -256,13 +320,8 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         },
 
         toggleGripper: () => {
-            const attached = get().attachedBlockId;
-            if (attached !== null) {
-                set({ attachedBlockId: null, isGripping: false });
-                pushToast(`BLOCK ${attached} RELEASED`);
-            } else {
-                get().tryGrabClosest();
-            }
+            if (get().attachedBlockId !== null) releaseAttached();
+            else get().tryGrabClosest();
         },
 
         startAutoPick: () => {
@@ -357,6 +416,11 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
 
         toggleTelemetryPaused: () => set((s) => ({ telemetryPaused: !s.telemetryPaused })),
 
+        setCameraPreset: (name) =>
+            set((s) => ({
+                cameraGoal: { pos: [...CAMERA_PRESETS[name]], key: (s.cameraGoal?.key ?? 0) + 1 },
+            })),
+
         toggleReplay: () => {
             const s = get();
             if (s.mode === 'REPLAY') set({ mode: 'MANUAL' });
@@ -376,6 +440,8 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 attachedBlockId: null,
                 waypoints: [],
                 replayIndex: 0,
+                hoverZoneId: null,
+                zonePulse: null,
                 resetKey: s.resetKey + 1,
                 hudTarget: { x: HOME_TARGET.x, y: HOME_TARGET.y, z: HOME_TARGET.z },
             }));
@@ -413,10 +479,13 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 });
 
                 set((s) => {
+                    const carriedPos =
+                        s.attachedBlockId !== null ? sim.blockPositions.get(s.attachedBlockId) : undefined;
                     const next: Partial<RobotStore> = {
                         hudAngles: { base: a.base, shoulder: a.shoulder, elbow: a.elbow },
                         hudTarget: { x: sim.ikTarget.x, y: sim.ikTarget.y, z: sim.ikTarget.z },
                         minBlockDist: Number.isFinite(minDist) ? minDist : 0,
+                        hoverZoneId: carriedPos ? zoneIdAt(carriedPos) : null,
                     };
                     // HUD readouts always refresh; the graph freezes while held
                     if (!s.telemetryPaused) {
@@ -466,13 +535,13 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'MOVE_TO_ZONE';
                         break;
                     case 'MOVE_TO_ZONE':
-                        setDest(-4, 3, 2); // above Zone A
+                        setDest(ZONES[0].center[0], 3, ZONES[0].center[1]); // above Zone A
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) nextPhase = 'LOWER_TO_DROP';
                         break;
                     case 'LOWER_TO_DROP':
-                        setDest(-4, 0.8, 2);
+                        setDest(ZONES[0].center[0], 0.8, ZONES[0].center[1]);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) {
-                            set({ isGripping: false, attachedBlockId: null });
+                            releaseAttached();
                             nextPhase = 'RETRACT';
                         }
                         break;
@@ -502,7 +571,7 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 if (sim.ikTarget.distanceTo(wp.pos) < ARRIVE_THRESHOLD) {
                     if (wp.grip !== isGripping) {
                         if (wp.grip) get().tryGrabClosest();
-                        else set({ isGripping: false, attachedBlockId: null });
+                        else releaseAttached();
                     }
                     set({ replayIndex: (replayIndex + 1) % waypoints.length });
                 }

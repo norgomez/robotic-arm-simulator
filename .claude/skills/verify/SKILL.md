@@ -43,8 +43,16 @@ Flows worth driving:
    "BASE/SHLDR/ELBOW joint angle"). Drive them with focus + ArrowLeft/Right —
    do NOT click the track (the thumb often sits where you'd click, a no-op).
    DIAGNOSTICS angles converge to the slider values; coords follow via FK.
-6. **AUTO PICK**: click the button, poll for `MODE: MANUAL` (completes in ~5-15s).
-   Blue block (ID 1) should end up in Zone A; arm retracts to ~`(0,3,0)`.
+6. **AUTO PICK**: click the button, poll for `MODE: MANUAL` (deterministic,
+   ~5s). Expect `DELIVERED — ZONE A` then `AUTO SEQUENCE COMPLETE` toasts. Blue
+   block (ID 1) ends in Zone A; arm retracts to ~`(0,3,0)`.
+6b. **Zone delivery**: releasing a carried block over a zone → `BLOCK N
+   DELIVERED — ZONE X` toast + pulse ring; away from zones → `BLOCK N RELEASED`.
+   Carrying over a zone lights it up (visual check).
+6c. **Camera presets**: ISO/TOP/SIDE/FRONT buttons in the right HUD fly the
+   camera (~1.5s); verify via screenshots.
+6d. **Responsive**: at ≤ 640px width the side HUD panels hide; below 768px the
+   deck shows only the operations column.
 7. **Teach pendant**: REC increments `PTS: N`, PLAY → `MODE: REPLAY` (active row
    highlighted), STOP → MANUAL. Per-row buttons have aria-labels ("Move waypoint
    N up/down", "Delete waypoint N"); grip toggles read OPEN/GRIP. SAVE/LOAD/CLR

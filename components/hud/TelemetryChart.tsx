@@ -15,7 +15,7 @@ export function TelemetryPanel() {
     const last = telemetry[telemetry.length - 1];
 
     return (
-        <div className="w-1/3 h-full p-3 pt-1.5 border-r border-slate-700/50 flex flex-col">
+        <div className="w-1/3 h-full p-3 pt-1.5 border-r border-slate-700/50 hidden md:flex flex-col">
             <div className="flex items-center gap-3 text-[10px] font-mono h-6 shrink-0">
                 <span className="text-cyan-500">LIVE DATA</span>
                 <span className="text-purple-400">● VEL {last ? last.velocity.toFixed(2) : '—'}</span>
