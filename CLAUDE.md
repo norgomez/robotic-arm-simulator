@@ -68,9 +68,17 @@ components/
     KeyboardControls.tsx   WASD/QE target nudge (camera-relative), G grip,
                            R record, Space replay
   hud/            The 2D overlay — plain DOM sibling of the Canvas, NOT drei <Html>:
-    Hud.tsx                layout + Diagnostics/Coordinates/Proximity panels
-    CommandDeck.tsx        bottom bar: mode, AUTO PICK/GRAB/RESET, teach pendant
-    TelemetryChart.tsx     Recharts velocity/torque graph
+    Hud.tsx                layout + Diagnostics/Coordinates/Proximity/ControlMode
+                           panels, FK sliders, controls hint
+    CommandDeck.tsx        bottom bar (collapsible): telemetry, operations, pendant
+    AutoPhaseStepper.tsx   AUTO_PICK FSM progress dots (always rendered; lights
+                           up during a run)
+    TeachPendant.tsx       waypoint list (grip toggle / reorder / delete per row,
+                           active-row highlight during replay) + save/load/clear
+                           (localStorage key 'robot-arm-program') + REC/PLAY
+    TelemetryChart.tsx     exports TelemetryPanel: velocity/torque graph with
+                           value axis, latest readouts, HOLD/RUN toggle
+    Toasts.tsx             transient event chips (auto-dismiss ~2.6s), top-center
 utils/
   kinematics.ts   solveIK (geometric IK) + solveFK (forward kinematics) +
                   the arm dimensions L1/L2/L3 and MAX_REACH/MIN_REACH.
@@ -98,11 +106,13 @@ utils/
 The store has **two kinds of state**; keeping them straight is the whole point
 of the architecture:
 
-- **Reactive state** (`mode`, `isGripping`, `waypoints`, `telemetry`,
+- **Reactive state** (`mode`, `isGripping`, `waypoints`, `telemetry`, `toasts`,
   `hudAngles`, …) — updated via `set()`, subscribed from components with
   **narrow selectors** (`useRobotStore((s) => s.mode)`). HUD readouts
   (`hudAngles`, `hudTarget`, `minBlockDist`) are throttled snapshots refreshed
-  every 5th frame (~12Hz), alongside telemetry.
+  every 5th frame (~12Hz), alongside telemetry (which additionally respects
+  `telemetryPaused`). User-facing events go through the store's `pushToast` —
+  emit toasts from store actions, not from components.
 - **`sim` — mutable per-frame data** (`ikTarget`, `smoothAngles`,
   `desiredAngles`, `blockPositions`, …) — mutated in place inside `tick()` and
   read transiently via `useRobotStore.getState().sim` inside `useFrame`

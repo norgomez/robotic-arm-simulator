@@ -18,6 +18,8 @@ export type AutoPhase =
 export type Waypoint = { pos: THREE.Vector3; grip: boolean };
 export type TelemetryPoint = { time: number; velocity: number; torque: number };
 export type BlockConfig = { id: number; initialPos: [number, number, number]; color: string };
+export type ToastKind = 'info' | 'success' | 'warn';
+export type Toast = { id: number; text: string; kind: ToastKind };
 
 // ---------- Scene / simulation config ----------
 // NOTE: spawn positions must be reachable — inside MAX_REACH of the shoulder
@@ -41,6 +43,8 @@ const REPLAY_SPEED = 4; // units/sec in REPLAY
 const ARRIVE_THRESHOLD = 0.1; // distance considered "arrived" at a destination
 const HUD_SAMPLE_EVERY_N_FRAMES = 5; // ~12Hz at 60fps: telemetry + HUD readout rate
 const TELEMETRY_WINDOW = 40;
+const MAX_TOASTS = 4;
+const PROGRAM_STORAGE_KEY = 'robot-arm-program';
 
 const lerp = (start: number, end: number, t: number) => start + (end - start) * t;
 
@@ -106,6 +110,9 @@ interface RobotStore {
     waypoints: Waypoint[];
     replayIndex: number;
     telemetry: TelemetryPoint[];
+    telemetryPaused: boolean;
+    /** Transient event notifications; auto-dismissed by the Toasts component. */
+    toasts: Toast[];
     /** Bumped on reset; components key/effect off it to restore initial state. */
     resetKey: number;
     // Throttled snapshots for HUD readouts (updated ~12Hz, not 60fps)
@@ -128,6 +135,17 @@ interface RobotStore {
     startAutoPick: () => void;
     recordWaypoint: () => void;
     toggleReplay: () => void;
+    // Waypoint program editing (MANUAL mode only; buttons enforce, store re-guards)
+    deleteWaypoint: (index: number) => void;
+    toggleWaypointGrip: (index: number) => void;
+    moveWaypoint: (index: number, dir: -1 | 1) => void;
+    clearWaypoints: () => void;
+    /** Persist / restore the waypoint program via localStorage. */
+    saveProgram: () => void;
+    loadProgram: () => void;
+    pushToast: (text: string, kind?: ToastKind) => void;
+    dismissToast: (id: number) => void;
+    toggleTelemetryPaused: () => void;
     reset: () => void;
     reportBlockPosition: (id: number, pos: THREE.Vector3) => void;
     /** Advance the simulation one frame. Called from SimulationLoop's useFrame. */
@@ -142,6 +160,15 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         moveTarget(sim.ikTarget.clone().add(dir.multiplyScalar(step)));
     };
 
+    let toastSeq = 0;
+    const pushToast = (text: string, kind: ToastKind = 'info') => {
+        set((s) => {
+            const toasts = [...s.toasts, { id: ++toastSeq, text, kind }];
+            while (toasts.length > MAX_TOASTS) toasts.shift();
+            return { toasts };
+        });
+    };
+
     return {
         mode: 'MANUAL',
         controlMode: 'IK',
@@ -153,6 +180,8 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
         waypoints: [],
         replayIndex: 0,
         telemetry: [],
+        telemetryPaused: false,
+        toasts: [],
         resetKey: 0,
         hudAngles: { base: 0, shoulder: 0, elbow: 0 },
         hudTarget: { x: HOME_TARGET.x, y: HOME_TARGET.y, z: HOME_TARGET.z },
@@ -218,12 +247,19 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                     closestId = id;
                 }
             });
-            if (closestId !== null) set({ attachedBlockId: closestId });
+            if (closestId !== null) {
+                set({ attachedBlockId: closestId });
+                pushToast(`BLOCK ${closestId} GRIPPED`, 'success');
+            } else {
+                pushToast('GRAB FAILED — NO BLOCK IN RANGE', 'warn');
+            }
         },
 
         toggleGripper: () => {
-            if (get().attachedBlockId !== null) {
+            const attached = get().attachedBlockId;
+            if (attached !== null) {
                 set({ attachedBlockId: null, isGripping: false });
+                pushToast(`BLOCK ${attached} RELEASED`);
             } else {
                 get().tryGrabClosest();
             }
@@ -240,7 +276,86 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
             set((s) => ({
                 waypoints: [...s.waypoints, { pos: sim.ikTarget.clone(), grip: s.isGripping }],
             }));
+            pushToast(`WAYPOINT ${get().waypoints.length} SET`);
         },
+
+        deleteWaypoint: (index) => {
+            if (get().mode === 'REPLAY') return;
+            set((s) => ({ waypoints: s.waypoints.filter((_, i) => i !== index) }));
+        },
+
+        toggleWaypointGrip: (index) => {
+            if (get().mode === 'REPLAY') return;
+            set((s) => ({
+                waypoints: s.waypoints.map((wp, i) => (i === index ? { ...wp, grip: !wp.grip } : wp)),
+            }));
+        },
+
+        moveWaypoint: (index, dir) => {
+            if (get().mode === 'REPLAY') return;
+            set((s) => {
+                const target = index + dir;
+                if (target < 0 || target >= s.waypoints.length) return s;
+                const waypoints = [...s.waypoints];
+                [waypoints[index], waypoints[target]] = [waypoints[target], waypoints[index]];
+                return { waypoints };
+            });
+        },
+
+        clearWaypoints: () => {
+            if (get().mode === 'REPLAY') return;
+            set({ waypoints: [], replayIndex: 0 });
+            pushToast('PROGRAM CLEARED');
+        },
+
+        saveProgram: () => {
+            const { waypoints } = get();
+            if (waypoints.length === 0) {
+                pushToast('NOTHING TO SAVE', 'warn');
+                return;
+            }
+            try {
+                const data = waypoints.map((wp) => ({ pos: [wp.pos.x, wp.pos.y, wp.pos.z], grip: wp.grip }));
+                localStorage.setItem(PROGRAM_STORAGE_KEY, JSON.stringify(data));
+                pushToast(`PROGRAM SAVED (${waypoints.length} PTS)`, 'success');
+            } catch {
+                pushToast('SAVE FAILED', 'warn');
+            }
+        },
+
+        loadProgram: () => {
+            if (get().mode === 'REPLAY') return;
+            try {
+                const raw = localStorage.getItem(PROGRAM_STORAGE_KEY);
+                if (!raw) {
+                    pushToast('NO SAVED PROGRAM', 'warn');
+                    return;
+                }
+                const data: unknown = JSON.parse(raw);
+                if (!Array.isArray(data) || data.length === 0) throw new Error('empty');
+                const waypoints: Waypoint[] = data.map((entry) => {
+                    const { pos, grip } = entry as { pos: unknown; grip: unknown };
+                    if (!Array.isArray(pos) || pos.length !== 3 || !pos.every((n) => Number.isFinite(n))) {
+                        throw new Error('bad waypoint');
+                    }
+                    const v = new THREE.Vector3(pos[0], pos[1], pos[2]);
+                    clampTargetInPlace(v); // keep old programs valid if geometry changes
+                    return { pos: v, grip: !!grip };
+                });
+                set({ waypoints, replayIndex: 0 });
+                pushToast(`PROGRAM LOADED (${waypoints.length} PTS)`, 'success');
+            } catch {
+                pushToast('LOAD FAILED — CORRUPT DATA', 'warn');
+            }
+        },
+
+        pushToast: (text, kind) => pushToast(text, kind),
+
+        dismissToast: (id) => {
+            set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+        },
+
+        toggleTelemetryPaused: () => set((s) => ({ telemetryPaused: !s.telemetryPaused })),
 
         toggleReplay: () => {
             const s = get();
@@ -264,6 +379,7 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 resetKey: s.resetKey + 1,
                 hudTarget: { x: HOME_TARGET.x, y: HOME_TARGET.y, z: HOME_TARGET.z },
             }));
+            pushToast('SYSTEM RESET', 'warn');
         },
 
         reportBlockPosition: (id, pos) => {
@@ -297,14 +413,18 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                 });
 
                 set((s) => {
-                    const telemetry = [...s.telemetry, { time: sim.frameCount, velocity, torque }];
-                    if (telemetry.length > TELEMETRY_WINDOW) telemetry.shift();
-                    return {
-                        telemetry,
+                    const next: Partial<RobotStore> = {
                         hudAngles: { base: a.base, shoulder: a.shoulder, elbow: a.elbow },
                         hudTarget: { x: sim.ikTarget.x, y: sim.ikTarget.y, z: sim.ikTarget.z },
                         minBlockDist: Number.isFinite(minDist) ? minDist : 0,
                     };
+                    // HUD readouts always refresh; the graph freezes while held
+                    if (!s.telemetryPaused) {
+                        const telemetry = [...s.telemetry, { time: sim.frameCount, velocity, torque }];
+                        if (telemetry.length > TELEMETRY_WINDOW) telemetry.shift();
+                        next.telemetry = telemetry;
+                    }
+                    return next;
                 });
             }
             sim.prevShoulder = a.shoulder;
@@ -360,6 +480,7 @@ export const useRobotStore = create<RobotStore>()((set, get) => {
                         setDest(0, 3, 0);
                         if (sim.ikTarget.distanceTo(dest) < ARRIVE_THRESHOLD) {
                             set({ mode: 'MANUAL', autoPhase: 'IDLE' });
+                            pushToast('AUTO SEQUENCE COMPLETE', 'success');
                         }
                         break;
                 }

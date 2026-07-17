@@ -45,9 +45,18 @@ Flows worth driving:
    DIAGNOSTICS angles converge to the slider values; coords follow via FK.
 6. **AUTO PICK**: click the button, poll for `MODE: MANUAL` (completes in ~5-15s).
    Blue block (ID 1) should end up in Zone A; arm retracts to ~`(0,3,0)`.
-7. **Teach pendant**: REC increments POINTS, PLAY → `MODE: REPLAY`, STOP → MANUAL.
-   PLAY is disabled at 0 points.
-8. **RESET SYSTEM**: coords back to `(2,2,2)`, points 0, blocks respawn, IK mode.
+7. **Teach pendant**: REC increments `PTS: N`, PLAY → `MODE: REPLAY` (active row
+   highlighted), STOP → MANUAL. Per-row buttons have aria-labels ("Move waypoint
+   N up/down", "Delete waypoint N"); grip toggles read OPEN/GRIP. SAVE/LOAD/CLR
+   persist via localStorage — assert their toasts.
+8. **Toasts**: events surface as text in `document.body.innerText` for ~2.6s —
+   `GRAB FAILED`, `BLOCK N GRIPPED`, `WAYPOINT N SET`, `AUTO SEQUENCE COMPLETE`,
+   `PROGRAM SAVED/LOADED`, `SYSTEM RESET`. Assert promptly after the action.
+9. **Stepper**: `APPR DESC LIFT MOVE DROP RETR` labels always in the deck;
+   phases light up during AUTO_PICK (visual check via screenshot).
+10. **Telemetry**: `⏸ HOLD` freezes the `VEL x.xx` readout even while the arm
+    moves; `▶ RUN` resumes. `▼ HIDE` collapses the deck to a slim bar.
+11. **RESET SYSTEM**: coords back to `(2,2,2)`, points 0, blocks respawn, IK mode.
 
 Always collect `console`/`pageerror` events — R3F renders errors silently to
 the console, not the page.

@@ -1,9 +1,12 @@
 'use client';
 
+import { useState } from 'react';
 import { useRobotStore } from '@/store/robotStore';
-import { TelemetryChart } from './TelemetryChart';
+import { TelemetryPanel } from './TelemetryChart';
+import { TeachPendant } from './TeachPendant';
+import { AutoPhaseStepper } from './AutoPhaseStepper';
 
-/** Mode indicator, AUTO PICK / gripper / reset controls. */
+/** Mode indicator, FSM stepper, AUTO PICK / gripper / reset controls. */
 function OperationsPanel() {
     const mode = useRobotStore((s) => s.mode);
     const isGripping = useRobotStore((s) => s.isGripping);
@@ -12,25 +15,27 @@ function OperationsPanel() {
     const reset = useRobotStore((s) => s.reset);
 
     return (
-        <div className="w-1/3 h-full p-4 flex flex-col justify-center items-center gap-3 border-r border-slate-700/50">
-            <div className="flex items-center gap-2 mb-1">
+        <div className="w-1/3 h-full p-3 flex flex-col justify-center items-center gap-2 border-r border-slate-700/50">
+            <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${mode !== 'MANUAL' ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`} />
                 <span className="text-xs font-mono text-slate-300 tracking-wider">
                     MODE: <span className="text-white font-bold">{mode}</span>
                 </span>
             </div>
 
+            <AutoPhaseStepper />
+
             <div className="flex w-full max-w-xs gap-2">
                 <button
                     onClick={startAutoPick}
                     disabled={mode !== 'MANUAL'}
-                    className="flex-1 py-3 text-[10px] font-bold font-mono rounded transition-all border bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700"
+                    className="flex-1 py-2 text-[10px] font-bold font-mono rounded transition-all border bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700 disabled:opacity-40"
                 >
                     AUTO PICK
                 </button>
                 <button
                     onClick={toggleGripper}
-                    className={`flex-1 py-3 text-[10px] font-bold font-mono rounded transition-all border ${
+                    className={`flex-1 py-2 text-[10px] font-bold font-mono rounded transition-all border ${
                         isGripping
                             ? 'bg-amber-900/50 border-amber-500 text-amber-400'
                             : 'bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700'
@@ -50,59 +55,44 @@ function OperationsPanel() {
     );
 }
 
-/** Waypoint record / replay controls. */
-function TeachPendant() {
+function CollapsedStatus() {
     const mode = useRobotStore((s) => s.mode);
-    const waypointCount = useRobotStore((s) => s.waypoints.length);
-    const recordWaypoint = useRobotStore((s) => s.recordWaypoint);
-    const toggleReplay = useRobotStore((s) => s.toggleReplay);
-
+    const count = useRobotStore((s) => s.waypoints.length);
     return (
-        <div className="w-1/3 h-full p-6 flex flex-col justify-center gap-2">
-            <div className="flex justify-between text-[10px] text-cyan-400 font-mono mb-1 border-b border-slate-700 pb-1">
-                <span>TEACH PENDANT</span>
-                <span>POINTS: {waypointCount}</span>
-            </div>
-            <div className="flex gap-2 h-12">
-                <button
-                    onClick={recordWaypoint}
-                    disabled={mode !== 'MANUAL'}
-                    className="flex-1 bg-slate-800 hover:bg-red-900/30 hover:border-red-500 border border-slate-600 rounded text-red-400 font-bold text-xs transition-all active:scale-95"
-                >
-                    ● REC
-                </button>
-                <button
-                    onClick={toggleReplay}
-                    disabled={waypointCount === 0}
-                    className="flex-1 border bg-slate-800 border-slate-600 text-cyan-400 hover:bg-slate-700 rounded text-xs font-bold transition-all active:scale-95"
-                >
-                    {mode === 'REPLAY' ? '■ STOP' : '▶ PLAY'}
-                </button>
-            </div>
-        </div>
+        <span className="text-[9px] font-mono text-slate-400">
+            MODE: <span className="text-white font-bold">{mode}</span> · PTS: {count}
+        </span>
     );
 }
 
-/** The bottom bar: telemetry graph, main operations, teach pendant. */
+/** The bottom bar: telemetry, operations + FSM stepper, teach pendant. Collapsible. */
 export function CommandDeck() {
+    const [collapsed, setCollapsed] = useState(false);
+
+    if (collapsed) {
+        return (
+            <div className="absolute bottom-0 left-0 w-full h-7 bg-slate-900/95 border-t border-slate-700 backdrop-blur-xl flex items-center gap-4 px-4 pointer-events-auto">
+                <button
+                    onClick={() => setCollapsed(false)}
+                    className="text-[9px] font-bold font-mono text-cyan-400 hover:text-cyan-300"
+                >
+                    ▲ COMMAND DECK
+                </button>
+                <CollapsedStatus />
+            </div>
+        );
+    }
+
     return (
         <div className="absolute bottom-0 left-0 w-full h-40 bg-slate-900/95 border-t border-slate-700 backdrop-blur-xl flex pointer-events-auto">
-            {/* 1. TELEMETRY GRAPH */}
-            <div className="w-1/3 h-full p-4 border-r border-slate-700/50 relative">
-                <div className="absolute top-2 left-4 text-[10px] text-cyan-500 font-mono flex gap-4">
-                    <span>LIVE DATA</span>
-                    <span className="text-purple-400">● VEL</span>
-                    <span className="text-green-400">● LOAD</span>
-                </div>
-                <div className="w-full h-full mt-2">
-                    <TelemetryChart />
-                </div>
-            </div>
-
-            {/* 2. MAIN OPERATIONS */}
+            <button
+                onClick={() => setCollapsed(true)}
+                className="absolute -top-5 right-2 text-[9px] font-bold font-mono text-slate-500 hover:text-slate-300 bg-slate-900/80 px-1.5 rounded-t border border-b-0 border-slate-700"
+            >
+                ▼ HIDE
+            </button>
+            <TelemetryPanel />
             <OperationsPanel />
-
-            {/* 3. PROGRAMMER UNIT */}
             <TeachPendant />
         </div>
     );

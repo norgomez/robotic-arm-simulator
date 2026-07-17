@@ -2,6 +2,7 @@
 
 import { useRobotStore, GRAB_RANGE, type JointAngles } from '@/store/robotStore';
 import { CommandDeck } from './CommandDeck';
+import { Toasts } from './Toasts';
 
 const RAD2DEG = 180 / Math.PI;
 const DEG2RAD = Math.PI / 180;
@@ -186,6 +187,9 @@ export function Hud() {
                 <CoordinatesPanel />
                 <ProximityPanel />
             </div>
+
+            {/* EVENT TOASTS */}
+            <Toasts />
 
             {/* BOTTOM COMMAND DECK */}
             <CommandDeck />
