@@ -296,12 +296,32 @@ function ProximityPanel() {
  * The 2D overlay. A plain DOM sibling of the Canvas (not drei <Html>), so HUD
  * re-renders never touch the 3D scene. Panels subscribe to the store with
  * narrow selectors and update at the throttled HUD sample rate.
+ *
+ * The root is `fixed` and panels hug the window edges with minimal insets.
+ * Pinch / ctrl+wheel browser page-zoom is suppressed so zooming only dollies
+ * the 3D camera (OrbitControls) — otherwise the whole HUD scales and drifts
+ * inward. Keyboard zoom (Ctrl +/-) still works for accessibility.
  */
 export function Hud() {
+    useEffect(() => {
+        const onWheel = (e: WheelEvent) => {
+            if (e.ctrlKey) e.preventDefault(); // trackpad pinch arrives as ctrl+wheel
+        };
+        const onGesture = (e: Event) => e.preventDefault(); // Safari pinch
+        window.addEventListener('wheel', onWheel, { passive: false });
+        window.addEventListener('gesturestart', onGesture);
+        window.addEventListener('gesturechange', onGesture);
+        return () => {
+            window.removeEventListener('wheel', onWheel);
+            window.removeEventListener('gesturestart', onGesture);
+            window.removeEventListener('gesturechange', onGesture);
+        };
+    }, []);
+
     return (
-        <div className="pointer-events-none absolute inset-0 z-10">
+        <div className="pointer-events-none fixed inset-0 z-10">
             {/* LEFT HUD */}
-            <div className="absolute top-10 left-6 w-48 hidden sm:flex flex-col gap-2 pointer-events-auto">
+            <div className="absolute top-2 left-2 w-48 hidden sm:flex flex-col gap-2 pointer-events-auto">
                 <DiagnosticsPanel />
                 <ControlModePanel />
                 <PidPanel />
@@ -309,7 +329,7 @@ export function Hud() {
             </div>
 
             {/* RIGHT HUD */}
-            <div className="absolute top-10 right-6 w-52 hidden sm:flex flex-col gap-2 pointer-events-auto">
+            <div className="absolute top-2 right-2 w-52 hidden sm:flex flex-col gap-2 pointer-events-auto">
                 <MissionPanel />
                 <CoordinatesPanel />
                 <ProximityPanel />

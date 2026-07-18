@@ -26,7 +26,7 @@ export function Toasts() {
     }, [toasts, dismissToast]);
 
     return (
-        <div className="absolute top-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-20">
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-20">
             {toasts.map((t) => (
                 <div
                     key={t.id}

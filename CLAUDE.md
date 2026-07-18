@@ -198,6 +198,10 @@ sorting both count. Reset restarts the mission but keeps the best time.
   3D-anchored labels (block IDs, zone names, waypoint numbers) use drei
   `<Html>`. The aesthetic is a dark "mission control" HUD (slate/cyan/amber,
   `font-mono`).
+- **The HUD is pinned to the window**: `fixed inset-0` root, panels hug the
+  edges with small insets. Browser pinch / ctrl+wheel page-zoom is suppressed
+  (Hud effect + viewport meta in `layout.tsx`) so zoom gestures only dolly the
+  3D camera — keyboard zoom (Ctrl +/-) is deliberately left working.
 - Imports use the `@/*` alias (maps to repo root, see `tsconfig.json`).
 
 ## Development Workflow
